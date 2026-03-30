@@ -263,7 +263,7 @@ def run(file_path: str, recipient_name: str, recipient_email: str):
         sb.table("prospects")
         .select("*")
         .in_("id", prospect_ids)
-        .order("icp_score", desc=True)
+        .order("created_at", desc=False)
         .execute()
     ).data or []
 
