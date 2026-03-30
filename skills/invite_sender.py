@@ -4,7 +4,9 @@ Triggered by: Oz API call from approve-batch Edge Function + daily cron (10 AM P
 Sends bare invites (NO connection notes) for approved prospects, max 5/day.
 """
 
+import argparse
 import logging
+import random
 import sys
 
 import config
@@ -13,6 +15,7 @@ from lib.unipile import UnipileClient
 from skills.helpers import (
     check_rate_limit,
     get_active_accounts,
+    get_effective_limit,
     is_business_hours,
     log_event,
     random_delay,
@@ -64,13 +67,20 @@ def send_invite_for_prospect(
     prospect: dict,
     tenant_id: str,
 ) -> bool:
-    """Send a bare invite for one prospect. Returns True if sent."""
+    """Send a bare invite for one prospect. Returns True if sent.
+
+    Mimics human behavior:
+    1. View the profile first (like a human would before connecting)
+    2. Short pause after viewing (reading the profile)
+    3. Then send the bare invite
+    """
     prospect_id = prospect["id"]
     campaign_id = prospect["campaign_id"]
     provider_id = prospect.get("linkedin_provider_id")
     slug = prospect.get("linkedin_slug")
 
-    # Pre-flight: check connection status
+    # Step 1: View the profile (pre-flight + human-like behavior)
+    # A real person always views a profile before sending a connection request
     skip_reason = preflight_check(unipile, account_id, prospect)
 
     if skip_reason == "already_connected":
@@ -86,10 +96,12 @@ def send_invite_for_prospect(
         logger.warning("Skipping %s: %s", prospect.get("linkedin_slug"), skip_reason)
         return False
 
-    # Use provider_id if available, otherwise slug
+    # Step 2: Pause after viewing profile (simulates reading it — 10-30 seconds)
+    random_delay((10, 30))
+
+    # Step 3: Send bare invite (NO note)
     target_id = provider_id or slug
 
-    # Send bare invite (NO note)
     try:
         result = unipile.send_invite(
             account_id=account_id,
@@ -136,13 +148,13 @@ def send_invite_for_prospect(
     return True
 
 
-def run():
+def run(force: bool = False):
     """Main entry point for the invite-sender skill."""
     sb = get_supabase()
     tenant_id = config.DEFAULT_TENANT_ID
 
-    if not is_business_hours():
-        print("Outside business hours — skipping invite run")
+    if not force and not is_business_hours():
+        print("Outside business hours — skipping invite run (use --force to override)")
         return
 
     accounts = get_active_accounts(tenant_id)
@@ -165,8 +177,14 @@ def run():
 
         unipile = UnipileClient(tenant_id=tenant_id)
 
+        # Randomize today's target — don't always max out the limit
+        # A human doesn't send exactly 5 invites every single day
+        effective_limit = get_effective_limit(account_id, "connection") or config.MAX_DAILY_INVITES
+        today_target = random.randint(max(1, effective_limit - 2), effective_limit)
+        logger.info("Today's invite target for %s: %d (limit: %d)", owner, today_target, effective_limit)
+
         # Get approved prospects for this account
-        prospects = get_approved_prospects(sb, account_id)
+        prospects = get_approved_prospects(sb, account_id, limit=today_target)
         if not prospects:
             logger.info("No approved prospects for %s", owner)
             continue
@@ -178,13 +196,18 @@ def run():
                 logger.info("Daily limit reached for %s after %d invites", owner, sent_count)
                 break
 
+            # Stop if we hit today's random target
+            if sent_count >= today_target:
+                logger.info("Hit today's random target (%d) for %s", today_target, owner)
+                break
+
             success = send_invite_for_prospect(sb, unipile, provider_account_id, prospect, tenant_id)
             if success:
                 sent_count += 1
                 total_sent += 1
 
-                # Random delay between invites
-                if sent_count < len(prospects):
+                # Random delay between invites (45-120 seconds — like a human browsing)
+                if sent_count < today_target:
                     random_delay(config.INVITE_DELAY_RANGE)
 
         print(f"Sent {sent_count} invites for {owner}")
@@ -194,8 +217,11 @@ def run():
 
 def main():
     setup_logging()
+    parser = argparse.ArgumentParser(description="Send bare LinkedIn invites for approved prospects")
+    parser.add_argument("--force", action="store_true", help="Override business hours check")
+    args = parser.parse_args()
     try:
-        run()
+        run(force=args.force)
     except Exception as e:
         logger.error("invite_sender failed: %s", e, exc_info=True)
         print(f"Error: {e}")
