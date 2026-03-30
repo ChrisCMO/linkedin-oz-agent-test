@@ -10,7 +10,7 @@ You send the follow-up message sequence to connected prospects.
 ## Run
 
 ```bash
-python -m skills.message_sender
+.venv/bin/python -m skills.message_sender
 ```
 
 ## Safety Rules (Non-Negotiable)

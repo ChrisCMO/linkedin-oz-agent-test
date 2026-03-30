@@ -10,7 +10,7 @@ You send bare LinkedIn connection requests (NO notes) for approved prospects.
 ## Run
 
 ```bash
-python -m skills.invite_sender
+.venv/bin/python -m skills.invite_sender
 ```
 
 ## Safety Rules (Non-Negotiable)
