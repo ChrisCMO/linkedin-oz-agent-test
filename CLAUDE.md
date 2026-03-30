@@ -96,10 +96,22 @@ Terminal: skipped | declined | recycled | blacklisted
 
 ## Database
 
-- **Supabase PostgreSQL** — 11 tables, service role key bypasses RLS
-- Schema: `db/supabase_schema_v3.sql`
+- **Supabase PostgreSQL** — v2 schema + pipeline migration, service role key bypasses RLS
+- Schema reference: `db/supabase_schema_v3.sql` (aspirational), actual DB is v2 + `db/migrate_v2_to_pipeline.sql`
 - Rate limiting enforced via `check_rate_limit()` and `get_effective_limit()` DB functions
-- Activity logging via `activity_log` table (partitioned by quarter)
+- Activity logging via `activity_log` table
+
+### Important: Actual Column Names (v2 schema)
+
+The DB uses v2 column names which differ from the v3 spec:
+
+| v3 Spec | Actual DB Column |
+|---------|-----------------|
+| `prospects.scoring` (JSONB) | `prospects.icp_score` (integer) |
+| `prospects.raw_data` (JSONB) | `prospects.raw_apollo_data` (JSONB) |
+| `companies` table | `prospect_companies` table |
+| `linkedin_accounts.unipile_account_id` | `linkedin_accounts.provider_account_id` (renamed by migration) |
+| `invitations.unipile_invitation_id` | `invitations.external_invitation_id` (renamed by migration) |
 
 ## Acceptance Detection
 
@@ -107,3 +119,48 @@ Bare invites don't create a chat on acceptance, so webhooks don't work reliably.
 - Primary: `GET /api/v1/users/relations` — 3x/day
 - Compare against 'sent' invitations in DB
 - On detection: update invitation + prospect, create messages, send email
+
+## Oz Environment
+
+- **Environment ID:** `iR37ujTjeo7Ne6pZ9vHRcI` (name: `vwc-linkedin`)
+- **Docker image:** `warpdotdev/dev-base:latest-agents`
+- **Setup command:** `pip install --break-system-packages -r /workspace/linkedin-automation-test/requirements.txt`
+- **Slack:** Connected (team-wide)
+- **Skills:** Use `python3` (system Python, not venv)
+
+### Manual Test Commands
+
+```bash
+# Test batch-sender (sends review email, no LinkedIn actions)
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt 'Run: cd /workspace/linkedin-automation-test && python3 -m skills.batch_sender --file test_prospects.csv --name "Chris" --email "christopher@yorcmo.com"'
+
+# Test invite-sender (will skip outside business hours)
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-automation-test && python3 -m skills.invite_sender"
+
+# Test acceptance-detector
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-automation-test && python3 -m skills.acceptance_detector"
+
+# Test message-sender
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-automation-test && python3 -m skills.message_sender"
+
+# Check run status
+oz run get <RUN_ID>
+```
+
+### Oz Setup Gotchas
+
+- `oz secret create` requires `--value-file <path>` not `--value "string"`
+- Long `oz` commands in Warp terminal get line-wrapped — newlines become part of the stored string. Run from Claude Code terminal or standard terminal instead.
+- If a setup command gets corrupted, delete and recreate the environment
+- Debian-based image blocks bare `pip install` (PEP 668) — use `--break-system-packages`
+- `python3 -m venv` may fail if `python3-venv` package isn't installed
+
+### Tested & Working
+
+- [x] batch-sender: imports CSV, creates batch_review, sends HTML email via Outlook
+- [x] invite-sender: runs, checks business hours, exits cleanly outside hours
+- [ ] invite-sender: actual invite sending (not tested — needs business hours + approved prospects)
+- [ ] acceptance-detector: not yet tested end-to-end
+- [ ] message-sender: not yet tested end-to-end
+- [ ] Edge Function (approve-batch): not yet deployed
+- [ ] Slack trigger (@Oz with file attachment): not yet tested
