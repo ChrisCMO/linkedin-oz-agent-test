@@ -76,7 +76,7 @@ def get_effective_limit(account_id: str, action: str) -> int | None:
 def get_active_accounts(tenant_id: str | None = None) -> list[dict]:
     """Get all active LinkedIn accounts for a tenant."""
     sb = get_supabase()
-    query = sb.table("linkedin_accounts").select("*").eq("is_active", True).eq("status", "ok")
+    query = sb.table("linkedin_accounts").select("*").eq("status", "ok")
     if tenant_id:
         query = query.eq("tenant_id", tenant_id)
     result = query.execute()

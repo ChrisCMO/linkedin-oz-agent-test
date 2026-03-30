@@ -1,9 +1,8 @@
 """Unipile API client with automatic activity logging to Supabase.
 
-Bug fixes from plan-context version:
-- account_id → linkedin_account_id (schema v3 column name)
-- action_type → action (schema v3 column name)
-- Added tenant_id (required NOT NULL in activity_log)
+Provider-agnostic: column names use linkedin_account_id + action.
+activity_log also populates account_id and action_type for backwards compat
+with any v2 code still reading those columns.
 """
 
 import logging
@@ -36,7 +35,9 @@ class UnipileClient:
         row = {
             "tenant_id": self.tenant_id,
             "linkedin_account_id": linkedin_account_id,
+            "account_id": linkedin_account_id,  # v2 compat
             "action": action,
+            "action_type": action,  # v2 compat
             "endpoint": endpoint,
             "success": success,
         }
