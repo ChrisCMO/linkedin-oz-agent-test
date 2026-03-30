@@ -10,7 +10,7 @@ You detect when LinkedIn connection invitations have been accepted by polling th
 ## Run
 
 ```bash
-.venv/bin/python -m skills.acceptance_detector
+python3 -m skills.acceptance_detector
 ```
 
 ## What It Does

@@ -24,7 +24,7 @@ Admin says something like:
 
 3. **Run the batch sender:**
    ```bash
-   .venv/bin/python -m skills.batch_sender --file "<path_to_file>" --name "<recipient_name>" --email "<recipient_email>"
+   python3 -m skills.batch_sender --file "<path_to_file>" --name "<recipient_name>" --email "<recipient_email>"
    ```
 
 4. **Report the result** back — the script prints a confirmation like:
