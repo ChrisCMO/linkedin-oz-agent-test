@@ -66,41 +66,35 @@ def upsert_company(sb, tenant_id: str, row: pd.Series) -> str | None:
     if not company_name:
         return None
 
-    try:
-        existing = (
-            sb.table("companies")
-            .select("id")
-            .eq("tenant_id", tenant_id)
-            .eq("name", company_name)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            return existing.data[0]["id"]
+    linkedin_url = str(row.get("Company LinkedIn URL", "")).strip() or None
+    industry = str(row.get("Industry", "")).strip() or None
 
-        linkedin_url = str(row.get("Company LinkedIn URL", "")).strip() or None
-        industry = str(row.get("Industry", "")).strip() or None
-        location = str(row.get("Company Location", "")).strip() or None
+    # Check if company already exists by name + tenant
+    existing = (
+        sb.table("prospect_companies")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("name", company_name)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return existing.data[0]["id"]
 
-        result = sb.table("companies").insert({
-            "tenant_id": tenant_id,
-            "name": company_name,
-            "industry": industry,
-            "linkedin_url": linkedin_url,
-            "data": {"location": location, "followers": row.get("Company LI Followers")},
-        }).execute()
+    result = sb.table("prospect_companies").insert({
+        "tenant_id": tenant_id,
+        "name": company_name,
+        "industry": industry,
+        "linkedin_url": linkedin_url,
+    }).execute()
 
-        return result.data[0]["id"] if result.data else None
-    except Exception:
-        # companies table may not exist in v2 schema — company info is on the prospect row
-        return None
+    return result.data[0]["id"] if result.data else None
 
 
 def upsert_prospect(
     sb,
     tenant_id: str,
     campaign_id: str,
-    linkedin_account_id: str,
     company_id: str | None,
     row: pd.Series,
     partner_name: str,
@@ -126,10 +120,8 @@ def upsert_prospect(
         logger.info("Prospect already exists: %s", slug)
         return existing.data[0]["id"]
 
-    icp_score = row.get("Company ICP Score")
-    scoring = {}
-    if pd.notna(icp_score):
-        scoring = {"score": int(icp_score)}
+    raw_icp_score = row.get("Company ICP Score")
+    icp_score = int(raw_icp_score) if pd.notna(raw_icp_score) else None
 
     # Determine which partner's messages to use
     partner_key = partner_name.split()[0] if partner_name else ""
@@ -147,7 +139,6 @@ def upsert_prospect(
     result = sb.table("prospects").insert({
         "tenant_id": tenant_id,
         "campaign_id": campaign_id,
-        "linkedin_account_id": linkedin_account_id,
         "company_id": company_id,
         "linkedin_slug": slug,
         "linkedin_url": linkedin_url,
@@ -161,8 +152,8 @@ def upsert_prospect(
         "company_name": str(row.get("Company", "")).strip() or None,
         "status": "scored",
         "source": "import",
-        "scoring": scoring,
-        "raw_data": {
+        "icp_score": icp_score,
+        "raw_apollo_data": {
             "messages": {"msg1": msg1, "msg2": msg2, "msg3": msg3},
             "activity": activity_data,
             "data_source": str(row.get("Data Source", "")).strip() or None,
@@ -250,7 +241,7 @@ def run(file_path: str, recipient_name: str, recipient_email: str):
     for _, row in df.iterrows():
         company_id = upsert_company(sb, tenant_id, row)
         prospect_id = upsert_prospect(
-            sb, tenant_id, campaign_id, linkedin_account_id,
+            sb, tenant_id, campaign_id,
             company_id, row, partner_name,
         )
         if prospect_id:
@@ -272,7 +263,7 @@ def run(file_path: str, recipient_name: str, recipient_email: str):
         sb.table("prospects")
         .select("*")
         .in_("id", prospect_ids)
-        .order("scoring->>score", desc=True)
+        .order("icp_score", desc=True)
         .execute()
     ).data or []
 

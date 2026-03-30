@@ -93,8 +93,8 @@ def _build_prospect_cards(prospects: list[dict]) -> str:
         company = p.get("company_name", "")
         location = p.get("location", "")
         linkedin_url = p.get("linkedin_url", "")
-        icp_score = (p.get("scoring") or {}).get("score")
-        industry = p.get("raw_data", {}).get("industry", "") if p.get("raw_data") else ""
+        icp_score = p.get("icp_score")
+        industry = (p.get("raw_apollo_data") or {}).get("industry", "")
 
         # Score badge
         score_html = ""
