@@ -61,36 +61,39 @@ def extract_linkedin_slug(url: str) -> str | None:
 
 
 def upsert_company(sb, tenant_id: str, row: pd.Series) -> str | None:
-    """Upsert a company record and return its ID."""
+    """Try to upsert a company record. Returns ID if companies table exists, None otherwise."""
     company_name = str(row.get("Company", "")).strip()
     if not company_name:
         return None
 
-    linkedin_url = str(row.get("Company LinkedIn URL", "")).strip() or None
-    industry = str(row.get("Industry", "")).strip() or None
-    location = str(row.get("Company Location", "")).strip() or None
+    try:
+        existing = (
+            sb.table("companies")
+            .select("id")
+            .eq("tenant_id", tenant_id)
+            .eq("name", company_name)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return existing.data[0]["id"]
 
-    # Check if company already exists by name + tenant
-    existing = (
-        sb.table("companies")
-        .select("id")
-        .eq("tenant_id", tenant_id)
-        .eq("name", company_name)
-        .limit(1)
-        .execute()
-    )
-    if existing.data:
-        return existing.data[0]["id"]
+        linkedin_url = str(row.get("Company LinkedIn URL", "")).strip() or None
+        industry = str(row.get("Industry", "")).strip() or None
+        location = str(row.get("Company Location", "")).strip() or None
 
-    result = sb.table("companies").insert({
-        "tenant_id": tenant_id,
-        "name": company_name,
-        "industry": industry,
-        "linkedin_url": linkedin_url,
-        "data": {"location": location, "followers": row.get("Company LI Followers")},
-    }).execute()
+        result = sb.table("companies").insert({
+            "tenant_id": tenant_id,
+            "name": company_name,
+            "industry": industry,
+            "linkedin_url": linkedin_url,
+            "data": {"location": location, "followers": row.get("Company LI Followers")},
+        }).execute()
 
-    return result.data[0]["id"] if result.data else None
+        return result.data[0]["id"] if result.data else None
+    except Exception:
+        # companies table may not exist in v2 schema — company info is on the prospect row
+        return None
 
 
 def upsert_prospect(
