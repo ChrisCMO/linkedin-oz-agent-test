@@ -113,11 +113,11 @@ class UnipileClient:
 
     # -- Profiles --
 
-    def get_profile(self, provider_id, account_id):
+    def get_profile(self, provider_id, account_id, db_account_id=None):
         return self._request(
             "GET", f"/api/v1/users/{provider_id}",
             action="profile_view",
-            linkedin_account_id=account_id,
+            linkedin_account_id=db_account_id or account_id,
             target_provider_id=provider_id,
             params={"account_id": account_id, "linkedin_sections": "*"},
         )
@@ -135,13 +135,13 @@ class UnipileClient:
             params=params,
         )
 
-    def send_invite(self, account_id, provider_id, campaign_id=None, prospect_id=None):
+    def send_invite(self, account_id, provider_id, db_account_id=None, campaign_id=None, prospect_id=None):
         """Send a BARE connection invite (no note — free account constraint)."""
         body = {"account_id": account_id, "provider_id": provider_id}
         return self._request(
             "POST", "/api/v1/users/invite",
             action="connection",
-            linkedin_account_id=account_id,
+            linkedin_account_id=db_account_id or account_id,
             target_provider_id=provider_id,
             json_body=body,
             campaign_id=campaign_id,

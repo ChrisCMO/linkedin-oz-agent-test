@@ -48,25 +48,37 @@ def get_approved_prospects(sb, linkedin_account_id: str, limit: int = 10) -> lis
     return result.data or []
 
 
-def preflight_check(unipile: UnipileClient, account_id: str, prospect: dict) -> str | None:
-    """Check if prospect is already connected. Returns 'skip' reason or None if OK."""
+def preflight_check(
+    unipile: UnipileClient,
+    account_id: str,
+    prospect: dict,
+    db_account_id: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Check if prospect is already connected.
+
+    Returns (skip_reason, resolved_provider_id).
+    skip_reason is None if OK to proceed; resolved_provider_id is the
+    LinkedIn member ID returned by Unipile (needed for send_invite).
+    """
     provider_id = prospect.get("linkedin_provider_id")
     slug = prospect.get("linkedin_slug")
     identifier = provider_id or slug
 
     if not identifier:
-        return "no_linkedin_id"
+        return "no_linkedin_id", None
 
     try:
-        profile = unipile.get_profile(identifier, account_id)
+        profile = unipile.get_profile(identifier, account_id, db_account_id=db_account_id)
         distance = profile.get("network_distance", "")
         if distance == "FIRST_DEGREE" or profile.get("is_relationship"):
-            return "already_connected"
+            return "already_connected", None
+        # Extract the real LinkedIn member ID from the profile
+        resolved_id = profile.get("provider_id") or provider_id or identifier
     except Exception as e:
         logger.warning("Profile lookup failed for %s: %s", identifier, e)
-        return "lookup_failed"
+        return "lookup_failed", None
 
-    return None
+    return None, resolved_id
 
 
 def send_invite_for_prospect(
@@ -94,7 +106,9 @@ def send_invite_for_prospect(
     slug = prospect.get("linkedin_slug")
 
     # Step 1: View the profile (pre-flight + human-like behavior)
-    skip_reason = preflight_check(unipile, provider_account_id, prospect)
+    skip_reason, resolved_provider_id = preflight_check(
+        unipile, provider_account_id, prospect, db_account_id=db_account_id
+    )
 
     if skip_reason == "already_connected":
         logger.info("Already connected to %s %s — marking connected",
@@ -108,16 +122,24 @@ def send_invite_for_prospect(
         logger.warning("Skipping %s: %s", prospect.get("linkedin_slug"), skip_reason)
         return False
 
+    # Save resolved provider_id back to DB so future runs don't need a slug lookup
+    if resolved_provider_id and not provider_id:
+        sb.table("prospects").update({
+            "linkedin_provider_id": resolved_provider_id,
+        }).eq("id", prospect_id).execute()
+        logger.info("Saved resolved provider_id %s for prospect %s", resolved_provider_id, prospect_id)
+
     # Step 2: Pause after viewing profile (simulates reading it — 10-30 seconds)
     random_delay((10, 30))
 
-    # Step 3: Send bare invite (NO note)
-    target_id = provider_id or slug
+    # Step 3: Send bare invite (NO note) — use resolved provider_id (not slug)
+    target_id = resolved_provider_id or provider_id or slug
 
     try:
         result = unipile.send_invite(
             account_id=provider_account_id,
             provider_id=target_id,
+            db_account_id=db_account_id,
             campaign_id=campaign_id,
             prospect_id=prospect_id,
         )
@@ -159,7 +181,7 @@ def send_invite_for_prospect(
     return True
 
 
-def run(force: bool = False):
+def run(force: bool = False, limit: int | None = None):
     """Main entry point for the invite-sender skill."""
     sb = get_supabase()
     tenant_id = config.DEFAULT_TENANT_ID
@@ -192,6 +214,8 @@ def run(force: bool = False):
         # A human doesn't send exactly 5 invites every single day
         effective_limit = get_effective_limit(account_id, "connection") or config.MAX_DAILY_INVITES
         today_target = random.randint(max(1, effective_limit - 2), effective_limit)
+        if limit is not None:
+            today_target = min(limit, today_target)
         logger.info("Today's invite target for %s: %d (limit: %d)", owner, today_target, effective_limit)
 
         # Get approved prospects for this account
@@ -217,6 +241,14 @@ def run(force: bool = False):
                 sent_count += 1
                 total_sent += 1
 
+                # Stop early if a hard limit was specified (e.g. --limit 1 for testing)
+                if limit is not None and total_sent >= limit:
+                    logger.info("Reached --limit %d — stopping", limit)
+                    print(f"Reached limit of {limit} invite(s) — stopping early")
+                    print(f"Sent {sent_count} invites for {owner}")
+                    print(f"Total invites sent: {total_sent}")
+                    return
+
                 # Random delay between invites (45-120 seconds — like a human browsing)
                 if sent_count < today_target:
                     random_delay(config.INVITE_DELAY_RANGE)
@@ -230,9 +262,10 @@ def main():
     setup_logging()
     parser = argparse.ArgumentParser(description="Send bare LinkedIn invites for approved prospects")
     parser.add_argument("--force", action="store_true", help="Override business hours check")
+    parser.add_argument("--limit", type=int, default=None, help="Max number of invites to send (for testing)")
     args = parser.parse_args()
     try:
-        run(force=args.force)
+        run(force=args.force, limit=args.limit)
     except Exception as e:
         logger.error("invite_sender failed: %s", e, exc_info=True)
         print(f"Error: {e}")
