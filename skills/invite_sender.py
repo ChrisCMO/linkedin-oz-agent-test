@@ -26,13 +26,22 @@ logger = logging.getLogger(__name__)
 
 
 def get_approved_prospects(sb, linkedin_account_id: str, limit: int = 10) -> list[dict]:
-    """Get approved prospects ordered by ICP score, ready for invites."""
+    """Get approved prospects ordered by ICP score, ready for invites.
+
+    v2 schema: prospects don't have linkedin_account_id — linked via campaign.
+    """
+    # Find campaigns for this account
+    campaigns = sb.table("campaigns").select("id").eq("linkedin_account_id", linkedin_account_id).execute()
+    campaign_ids = [c["id"] for c in (campaigns.data or [])]
+    if not campaign_ids:
+        return []
+
     result = (
         sb.table("prospects")
         .select("*")
-        .eq("linkedin_account_id", linkedin_account_id)
+        .in_("campaign_id", campaign_ids)
         .eq("status", "approved")
-        .order("scoring->>score", desc=True)
+        .order("icp_score", desc=True)
         .limit(limit)
         .execute()
     )
@@ -63,11 +72,16 @@ def preflight_check(unipile: UnipileClient, account_id: str, prospect: dict) -> 
 def send_invite_for_prospect(
     sb,
     unipile: UnipileClient,
-    account_id: str,
+    db_account_id: str,
+    provider_account_id: str,
     prospect: dict,
     tenant_id: str,
 ) -> bool:
     """Send a bare invite for one prospect. Returns True if sent.
+
+    Args:
+        db_account_id: UUID from linkedin_accounts table (for DB inserts)
+        provider_account_id: Unipile account ID (for API calls)
 
     Mimics human behavior:
     1. View the profile first (like a human would before connecting)
@@ -80,15 +94,13 @@ def send_invite_for_prospect(
     slug = prospect.get("linkedin_slug")
 
     # Step 1: View the profile (pre-flight + human-like behavior)
-    # A real person always views a profile before sending a connection request
-    skip_reason = preflight_check(unipile, account_id, prospect)
+    skip_reason = preflight_check(unipile, provider_account_id, prospect)
 
     if skip_reason == "already_connected":
         logger.info("Already connected to %s %s — marking connected",
                      prospect.get("first_name"), prospect.get("last_name"))
         sb.table("prospects").update({
             "status": "connected",
-            "status_changed_at": "now()",
         }).eq("id", prospect_id).execute()
         return False
 
@@ -104,7 +116,7 @@ def send_invite_for_prospect(
 
     try:
         result = unipile.send_invite(
-            account_id=account_id,
+            account_id=provider_account_id,
             provider_id=target_id,
             campaign_id=campaign_id,
             prospect_id=prospect_id,
@@ -116,10 +128,10 @@ def send_invite_for_prospect(
     # Extract invitation ID from response
     external_id = result.get("id") or result.get("invitation_id")
 
-    # Insert invitation record
+    # Insert invitation record (use DB account ID, not Unipile provider ID)
     sb.table("invitations").insert({
         "tenant_id": tenant_id,
-        "linkedin_account_id": account_id,
+        "linkedin_account_id": db_account_id,
         "prospect_id": prospect_id,
         "campaign_id": campaign_id,
         "provider_id": target_id,
@@ -130,7 +142,6 @@ def send_invite_for_prospect(
     # Update prospect status
     sb.table("prospects").update({
         "status": "invite_sent",
-        "status_changed_at": "now()",
     }).eq("id", prospect_id).execute()
 
     # Log event
@@ -201,7 +212,7 @@ def run(force: bool = False):
                 logger.info("Hit today's random target (%d) for %s", today_target, owner)
                 break
 
-            success = send_invite_for_prospect(sb, unipile, provider_account_id, prospect, tenant_id)
+            success = send_invite_for_prospect(sb, unipile, account_id, provider_account_id, prospect, tenant_id)
             if success:
                 sent_count += 1
                 total_sent += 1
