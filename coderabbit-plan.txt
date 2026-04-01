@@ -1,0 +1,385 @@
+Implement the Oz Foundation & SKILL.md Playbooks (Phase 0). The goal is to stand up the Oz orchestration platform and create complete SKILL.md playbooks for all 6 agents — with concrete wrapper function signatures and `[WRAPPER: not_implemented]` placeholders — before any wrapper code is written, establishing the agent layer as the primary decision-maker.
+
+**Task 0.1 — Oz Workspace & Environment Setup:**
+- Create an Oz workspace for the Linky project following Warp documentation
+- Configure the Docker-based execution environment for Python wrapper invocation
+- Validate Oz CLI commands: `oz run`, `oz schedule`, `oz status`
+- Test Oz API/SDK access for programmatic skill execution
+- Confirm HITL capability: session sharing, pause/steer/resume mid-execution
+- Document Oz operational patterns for team reference
+
+**Task 0.2 — SKILL.md Playbooks with Wrapper Signatures (`.agents/skills/`):**
+- Create complete SKILL.md playbooks for all 6 agents:
+  - `.agents/skills/targeting/SKILL.md` (Agent 1 — ICP Builder): ICP configuration → Apollo search params; wrapper: `apollo.build_search_params(icp_config) → SearchParams`
+  - `.agents/skills/discovery/SKILL.md` (Agent 2 — Prospect Finder): company discovery → enrichment → contact discovery → scoring → validation; document all wrapper signatures: `google_places.discover_companies(industry, city)`, `zoominfo.company_search(company_name)`, `apollo.org_enrich(domain)`, `apollo.people_search(domain, titles)`, `zoominfo.contact_search(company, titles, functions)`, `apollo.person_enrich(apollo_id)`, `apify.scrape_posts(linkedin_username)`, `apify.scrape_comments(linkedin_url)`, `ai_svc.score_company(company_data, icp_config)`, `ai_svc.score_contact(contact_data, company_context)`
+  - `.agents/skills/engagement/SKILL.md` (Agent 3 — "Jordan Belfort"): message generation → connection requests; wrappers: `ai_svc.generate_messages(prospect, account, brand_voice)`, `unipile.send_connection_request(account_id, linkedin_url, note)`
+  - `.agents/skills/nurture/SKILL.md` (Agent 4 — "Big Momma"): follow-up sequence management; wrappers: `unipile.send_message(chat_id, text)`, `unipile.get_conversation(chat_id)`
+  - `.agents/skills/conversion/SKILL.md` (Agent 5 — "The Pam"): reply classification → routing; wrapper: `ai_svc.classify_reply(message_text, conversation_history)`
+  - `.agents/skills/intelligence/SKILL.md` (Agent 6 — "James Bond"): weekly reports → ICP refinement; wrappers: `ai_svc.generate_weekly_report(campaign_metrics)`, `ai_svc.suggest_icp_refinements(outcomes)`
+- Each SKILL.md must include: frontmatter (name, description, triggers), step definitions with wrapper calls marked `[WRAPPER: not_implemented]`, checkpoint events, HITL pause points, and agent decision logic (not delegated to wrappers)
+
+**Task 0.3 — Oz Trigger Configuration:**
+- Configure Discovery Skill: scheduled trigger (daily cron) + manual trigger
+- Configure Engagement Skill: event trigger (on `prospect_approved` event)
+- Configure Nurture Skill: event trigger (on `connection_accepted` event)
+- Configure Conversion Skill: webhook trigger (on `new_message` from Unipile)
+- Configure Intelligence Skill: scheduled trigger (Monday 8 AM)
+- Configure Targeting Skill: manual trigger (Admin-initiated)
+- Document the trigger→skill→wrapper invocation chain for each capability
+
+**Task 0.4 — Linear & Repository Setup:**
+- Create a Linear project for the ICP Pipeline with ticket templates following `docs/git-strategy.md` conventions
+- Configure branch naming: `feature/{owner}-LNK-{id}-{description}` pattern
+- Set up CODEOWNERS: Chris as default owner, JC owns `agents/` and `orchestrator/`
+- Verify CodeRabbit integration is active with `.coderabbit.yaml` at repo root
+
+**Task 0.5 — ADR Creation (`docs/adr/`):**
+- Create the `docs/adr/` directory (no ADR convention currently exists)
+- Write ADR-001: Oz-First Architecture (SKILL.md playbooks define agent behavior, Python wrappers execute as subordinate hands)
+- Write ADR-002: Core Data Stack (Apollo primary, ZoomInfo supplement, Apify for LinkedIn validation)
+- Write ADR-003: Outreach Provider Strategy (Unipile primary, Reply.io evaluation candidate)
+- Each ADR must include: decision context, options considered, and rationale
+
+**Task 0.6 — `docs/agents.md` with Brand Voice Profiles:**
+- Document the 6-agent structure from `master-architecture-plan.md`
+- Map each agent to its corresponding SKILL.md file and Python wrapper functions
+- Include ICP scoring criteria from `docs/client.md`: title fit, industry fit, company size, revenue, geography, competitor displacement
+- Document dual ICP profiles (Financial Statement Audits vs EBP Audits) and their different discovery rules
+- Document Chad's brand voice characteristics: warm/natural tone, research-driven personalization, relationship-first framing, authentic curiosity
+- Document core VWC firm differentiators: partner-level attention, 50-year history, no PE sale (independence value prop vs. Moss Adams/BDO), deep vertical expertise
+- Create explicitly differentiated voice profiles (NOT name-swapped templates) for Adrienne Nordland and Melinda Johnson — each profile must result in substantively different message outputs when used by Agent 3
+
+**Task 0.7 — Budget Approval Document:**
+- Prepare a budget justification document for Tyler/Joe covering Reply.io ($30-60/mo), Sales Navigator ($100/mo), Knowledge Net ($59/mo)
+- Include expected ROI rationale (fixing 550→45 contact gap = ~10× contact coverage improvement)
+- Define a one-month evaluation timeline with clear success metrics
+- Note: Phase 3 expanded sources and Phase 5 Reply.io integration are blocked on this approval
+
+Implement the Model Client Calibration Gate (Phase 0.5). The goal is to run the discovery and enrichment pipeline on four known-good VWC model clients, iterate on the Company ICP Score prompt until all four score ≥80, assess competitor connection detection feasibility, and compile a calibration report for Joe's approval — which is a hard blocking gate before any production credit spend in Phases 1–4.
+
+**Task 0.5.1 — Model Client Pipeline Scan:**
+- Identify four named model clients from VWC's existing customer base (known good ICP fits)
+- Run Google Places discovery for each model client's company domain
+- Execute ZoomInfo + Apollo enrichment for each company — use calibration budget, NOT the production 10K credits
+- Pull contact data for decision-makers at each company
+- Store raw enrichment data for scoring prompt iteration
+- Document expected scores (all should be 80+ based on known ICP fit)
+
+**Task 0.5.2 — Scoring Prompt Calibration Iteration:**
+- Start with the baseline Company ICP Score prompt using the eight weighted dimensions defined in Task 4.1a
+- Run scoring against model client 1 — document score and dimension breakdown
+- If score < 80: identify underscoring dimensions; adjust weights, sub-category mappings, or dimension definitions
+- Repeat until model client 1 scores ≥80
+- Apply refined prompt to model clients 2, 3, 4 — all must score ≥80 without further changes
+- If any model client fails after prompt stabilizes: document as calibration anomaly for Joe review
+- Capture final prompt version as `scoring_prompt_v1` for production use
+
+**Task 0.5.3 — Competitor Connection Detection Feasibility:**
+- Research Unipile API capabilities for retrieving a prospect's LinkedIn connections
+- Research Apify actor capabilities for connection list scraping (if Unipile is insufficient)
+- Test on a sample prospect: determine if connections to Moss Adams/BDO/Sweeney Conrad employees can be detected
+- Document findings: Is detection possible (Yes/No/Partial)? What data access is required (1st-degree visible? 2nd-degree)? Rate limit/cost implications? Accuracy confidence level?
+- Produce a recommendation: should Competitor Signal use connection detection (if feasible) or rely solely on "current auditor" enrichment data?
+
+**Task 0.5.4 — Calibration Report for Joe Review (BLOCKING GATE):**
+- Compile report including: all four model client scores with dimension breakdowns; scoring prompt changes made during iteration; final prompt version with rationale for each dimension weight; competitor connection detection feasibility findings and recommendation; risk assessment for production score divergence
+- Submit to Joe for review
+- **BLOCKING GATE:** Obtain Joe's explicit approval before proceeding to Phase 1
+- Document any Joe feedback requiring plan modifications
+
+Implement the discovery capability and pipeline configuration schema (Phase 1). The goal is to build the Google Places discovery wrapper, activate Step 1 of the Oz Discovery Skill with the agent driving execution from ICP config, and define all JSONB pipeline configuration schemas in a Supabase migration. All configuration and state is stored in Supabase; no local config files.
+
+**Task 1.1 — `lib/google_places.py`:**
+- Implement `discover_companies(industry, city) → List[Company]` function
+- **Wrapper responsibilities** (NOT delegated to Oz): auth/header construction (API key injection from environment), retries/backoff (exponential backoff with jitter on 429/5xx), response normalization (parse Places API response into consistent `Company` dict), activity logging (log every call to `activity_log` with `action_type: 'places_search'`)
+- Call Google Places Text Search using the `"{industry} companies in {city}"` pattern
+- Parse results into normalized records with: name, domain (extracted from website field), address, phone, google_rating
+- Return company list for agent consumption — the agent applies the domain-required filter via its own reasoning
+- Insert into `companies` table using `ON CONFLICT (tenant_id, domain) DO UPDATE` for deduplication
+- Emit `company_discovered` events for each newly inserted company
+
+**Task 1.2 — Discovery Skill Step 1 Activation (`.agents/skills/discovery/SKILL.md`):**
+- Update Step 1 to invoke `google_places.discover_companies(industry, city)`, replacing the `[WRAPPER: not_implemented]` placeholder
+- Define agent behavior in playbook: reads `campaigns.icp.target_industries` and `campaigns.icp.target_cities`; iterates industry × city pairs; applies its own reasoning to filter domainless companies; persists progress to `campaigns.pipeline_state` JSONB after each city batch; presents checkpoint: "Discovered {n} companies across {m} cities — proceed to enrichment?"
+- Define checkpoint event `discovery_complete` emitted after company batch discovered
+- Test end-to-end: Oz trigger → Skill execution → wrapper invocation → companies in database
+
+**Task 1.3 — Pipeline Configuration Schema & Migration (`db/migrations/`):**
+- Create the `db/migrations/` directory (does not currently exist)
+- Write migration file `db/migrations/001_pipeline_config.sql` containing all schema changes:
+  - Add `campaigns.icp_type` enum column: `'audit_tax'` | `'benefit_plan_audit'`
+  - Extend `campaigns.icp` JSONB with dual-ICP-aware fields: `target_industries[]`, `target_cities[]`, `target_titles[]`, `revenue_sweet_spot` (object with `min`/`max`), `revenue_hard_ceiling` (nullable), `employee_threshold_trigger`, `industry_priorities` (array of `{industry, weight}`), `geography_tiers` (array of `{tier, cities[], weight}`), `title_targeting` (object with `finance_titles[]`, `hr_titles[]`, `decision_logic`), `ownership_rules` (object with `excluded_types[]`, `flag_types[]`), `excluded_companies[]`, `competitor_firms[]`
+  - Add `campaigns.pipeline_config` JSONB: `high_priority_threshold` (default 70), `max_prospects_per_batch`; `score_threshold` placement determined by Assumption 5 choice
+  - Add `campaigns.pipeline_state` JSONB with flattened structure: `current_phase` (enum: `'discovery'`, `'company_enrichment'`, `'contact_discovery'`, `'contact_enrichment'`, `'scoring'`, `'validation'`, `'complete'`), `last_step_completed`, counters (`companies_discovered`, `companies_enriched`, `companies_excluded`, `contacts_discovered`, `contacts_enriched`, `contacts_scored`), concurrency lock fields (`locked_by_run_id` UUID, `locked_at`), `last_error`, `updated_at`
+- Document the schema in `docs/db/PIPELINE_CONFIG.md`
+
+Implement the company enrichment capability (Phase 2). The goal is to create ZoomInfo and Apollo org enrich wrappers, build the company enrichment orchestration service with agent-driven exclusion reasoning, and activate Step 2 of the Oz Discovery Skill — so the agent can present a checkpoint before spending any Apollo credits. All enrichment state persists to Supabase.
+
+**Task 2.1 — `lib/zoominfo.py`:**
+- Implement `company_search(company_name) → CompanyData` function
+- **Wrapper responsibilities** (NOT delegated to Oz): auth/header construction (API key/token injection, OAuth refresh if needed), retries/backoff (exponential backoff with jitter on rate limits), response normalization (parse into consistent dict with revenue, employees, ownership_type, sic_code), activity logging (log every call to `activity_log` with `action_type: 'zoominfo_company_search'`)
+- Return normalized data for agent reasoning — the wrapper does NOT apply exclusion logic
+
+**Task 2.2 — `lib/apollo.py` (extend with `org_enrich`):**
+- Add `org_enrich(domain) → CompanyEnrichment` function
+- **Wrapper responsibilities** (NOT delegated to Oz): auth/header construction (API key injection), retries/backoff (exponential backoff with jitter on 429/5xx), response normalization (parse into consistent dict with revenue, employees, industry, founded_year, linkedin_url), activity logging (log to `activity_log` with `action_type: 'apollo_org_enrich'`), rate limit enforcement (check Apollo rate limits before call, queue if exceeded)
+- **Quota exhaustion handling:** Catch HTTP 402 and quota-related errors; surface descriptive, actionable error message (e.g., "Apollo credit quota exhausted. Check Apollo dashboard and contact admin to add credits before retrying.")
+- Return enrichment data for agent consumption
+
+**Task 2.3 — `services/company_enrichment_svc.py`:**
+- Implement `enrich_companies(company_ids) → EnrichmentResult` function
+- **First pass (free):** Call `zoominfo.company_search()` for all companies; return data to agent
+- The agent applies hard exclusion reasoning against `campaigns.icp`: Revenue > `icp.revenue_hard_ceiling` (if set) → exclude; Public company → exclude (per `icp.ownership_rules.excluded_types`); PE-backed → flag but don't exclude (per `icp.ownership_rules.flag_types`); Government entity → exclude; Employees < `icp.employee_threshold_trigger` → exclude
+- **Second pass (paid):** For agent-approved survivors, call `apollo.org_enrich()` ($1 each); merge results (Apollo primary, ZoomInfo fills gaps)
+- Update `companies` table with enriched data; set `enrichment_status`
+- Persist progress to `campaigns.pipeline_state` counters (`companies_enriched`, `companies_excluded`) after each batch
+- Return result with success/skip/pe_flagged counts
+
+**Task 2.4 — Discovery Skill Step 2 Activation (`.agents/skills/discovery/SKILL.md`):**
+- Update Step 2 to invoke `company_enrichment_svc.enrich_companies()`
+- Define agent behavior in playbook: **Acquire concurrency lock** — set `pipeline_state.locked_by_run_id` to current Oz run ID; abort if already locked; reads `campaigns.icp.ownership_rules`, `campaigns.icp.revenue_hard_ceiling`, `campaigns.icp.employee_threshold_trigger`; calls `zoominfo.company_search()` per company; applies its own exclusion reasoning; presents checkpoint: "{n} companies pass ICP filters. {m} PE-backed companies flagged for manual review. Proceed with enrichment?"; on approval, invokes `apollo.org_enrich()` per survivor; **handles quota errors gracefully** — if wrapper returns quota exhaustion error, pause skill and surface actionable message to operator; updates `pipeline_state.current_phase`, `last_step_completed`, and counters after each batch; **releases concurrency lock** — clears `locked_by_run_id` on completion or error
+- Define checkpoint event `enrichment_complete` with counts (enriched, excluded, pe_flagged)
+- Test end-to-end: Oz trigger → discovery → agent exclusion reasoning → enrichment
+
+**Task 2.5 — Batch Processing & Admin Endpoint:**
+- Add `get_unenriched_companies(campaign_id, limit)` query returning companies ordered by discovery recency
+- Track progress in `campaigns.pipeline_state` counters for resume-on-failure; pipeline state is authoritative — on resume, agent reads `pipeline_state.last_step_completed` to determine where to continue
+- Add admin endpoint `GET /admin/campaigns/{id}/enrichment-status` in `routers/admin.py` returning progress (reads from `pipeline_state`)
+- **Error handling:** On wrapper errors (including quota exhaustion), log to `pipeline_state.last_error` and surface to operator
+
+Implement the contact discovery and enrichment capability (Phase 3). The goal is to build Apollo and ZoomInfo contact search wrappers, the Apollo person enrich wrapper with defensive quota error handling, multi-source discovery and enrichment services, and activate Step 3 of the Oz Discovery Skill — with the agent reasoning about prioritization and presenting a checkpoint before enrichment.
+
+**Task 3.1 — `lib/apollo.py` (extend with `people_search`):**
+- Add `people_search(domain, titles, seniorities) → List[Contact]` function
+- **Wrapper responsibilities**: auth/header construction (API key injection), retries/backoff (exponential backoff on rate limits), response normalization (parse into consistent Contact dict with name, title, apollo_id, email — note names are obfuscated in search results), activity logging (log to `activity_log` with `action_type: 'apollo_people_search'`)
+- **Error handling:** Catch and surface descriptive error messages for API failures
+- `apollo_id` on each returned contact enables downstream person enrichment
+
+**Task 3.2 — `lib/zoominfo.py` (extend with `contact_search`):**
+- Add `contact_search(company_name, titles, functions, levels) → List[Contact]` function
+- **Wrapper responsibilities**: auth/header construction (API key/OAuth), retries/backoff (exponential backoff), response normalization (parse into consistent Contact dict), activity logging (log to `activity_log` with `action_type: 'zoominfo_contact_search'`)
+
+**Task 3.3 — `lib/apollo.py` (extend with `person_enrich`):**
+- Add `person_enrich(apollo_id) → ContactEnrichment` function
+- **Wrapper responsibilities**: auth/header construction (API key injection), retries/backoff (exponential backoff), response normalization (parse into dict with full_name, linkedin_url, email, phone, employment_history), activity logging (log to `activity_log` with `action_type: 'apollo_person_enrich'`), rate limit enforcement (check Apollo rate limits before call)
+- **Quota exhaustion handling:** Catch HTTP 402 and quota-related errors; surface descriptive, actionable error message (e.g., "Apollo credit quota exhausted. Check Apollo dashboard and contact admin to add credits before retrying.")
+
+**Task 3.4 — `services/contact_discovery_svc.py`:**
+- Implement `discover_contacts(company_ids) → List[Contact]` function
+- **Read title targeting from ICP config:** Check `campaigns.icp.title_targeting.decision_logic` to determine finance vs. HR titles based on `icp_type`
+- **Source 1 — Apollo People Search (free):** Call with domain, appropriate titles from `title_targeting`, `person_seniorities` (c_suite, vp, director, owner)
+- **Source 2 — ZoomInfo Contact Search (free):** Call with company name, `jobTitle`, appropriate `jobFunction` (Finance/Accounting or HR), `managementLevel`
+- **Source 3 — LinkedIn Sales Navigator (pending approval):** Create `lib/sales_navigator.py` wrapper; search by company + title filters
+- **Source 4 — Knowledge Net (pending approval):** Create `lib/knowledge_net.py` wrapper; query for additional contacts
+- Merge and deduplicate results; prefer Apollo records (have `apollo_id` for enrichment); track `discovery_source` on each contact
+- Insert into `prospects` table with status `'sourced'`, linked to company, recording `discovery_source`
+- Persist progress to `campaigns.pipeline_state.contacts_discovered` counter
+
+**Task 3.5 — `services/contact_enrichment_svc.py`:**
+- Implement `enrich_contacts(prospect_ids) → EnrichmentResult` function
+- Pre-filter: skip prospects whose company failed hard exclusions
+- Run cross-campaign deduplication check: `SELECT EXISTS(SELECT 1 FROM prospects WHERE tenant_id=$1 AND linkedin_provider_id=$2)` — skip if exists
+- Call `apollo.person_enrich()` ($1 each) using stored `apollo_id`
+- **Handle quota errors gracefully:** If wrapper returns quota exhaustion error, log to `pipeline_state.last_error` and return partial results with error flag
+- Update `prospects` table with enriched data and `enrichment_status`
+- Track `linkedin_available` boolean on each prospect record
+- Persist progress to `campaigns.pipeline_state.contacts_enriched` counter
+- Return result with success/skip counts and any error information
+
+**Task 3.6 — Discovery Skill Step 3 Activation (`.agents/skills/discovery/SKILL.md`):**
+- Update Step 3 to invoke `contact_discovery_svc.discover_contacts()` and `contact_enrichment_svc.enrich_contacts()`
+- Define agent behavior in playbook: reads `campaigns.icp.title_targeting`; invokes discovery across all sources; applies its own reasoning to prioritize contacts by title match strength, company fit, and geography; presents checkpoint: "Found {n} contacts across {m} companies. Top {p} contacts recommended for enrichment. Proceed?"; on approval, invokes `contact_enrichment_svc.enrich_contacts()` for prioritized subset; **handles quota errors gracefully** — if service returns quota exhaustion error, pause skill and surface actionable message to operator; updates `pipeline_state.current_phase` to `'contact_enrichment'` and updates counters; sets `enrichment_status: 'quota_exhausted'` on remaining contacts when quota runs out
+- Define checkpoint events: `contact_discovery_complete`, `contact_enrichment_complete`
+- Include source tracking in checkpoint metadata for comparative analysis
+- Test end-to-end: Oz trigger → contact discovery → agent prioritization → enrichment
+
+Implement the AI scoring and LinkedIn validation capability (Phase 4). The goal is to build dual scoring functions in `ai_svc.py` (Company ICP Score using GPT-5.4 with eight dimensions, Contact Engagement Score with five dimensions), create a scoring service that uses Company Score as qualification gate and Contact Score for prioritization, build a safety-critical `lib/apify.py` wrapper with actor lifecycle management, quota error handling, and activity classification owned by the wrapper, and activate Step 4 of the Oz Discovery Skill — completing Agent 2's full pipeline capability.
+
+**Task 4.1a — `services/ai_svc.py` (extend with `score_company`):**
+- Add `score_company(company_data, icp_config) → CompanyScoringResult` function
+- **Model routing:** GPT-5.4 for scoring operations
+- **Eight weighted dimensions:**
+  - Industry Fit (20 pts): match against `icp.industry_priorities` with explicit sub-category mappings
+  - Revenue Fit (15 pts): compare against `icp.revenue_sweet_spot`; bonus for sweet spot center, penalty approaching ceiling
+  - Company Size/Employees (15 pts): compare against `icp.employee_threshold_trigger` and ideal range
+  - Geography (12 pts): match against `icp.geography_tiers`; tier 1 = full points, tier 2 = partial
+  - Ownership Type (10 pts): clean = full points; PE-backed = 0 + flag; excluded types = hard disqualify
+  - Growth Signals (10 pts): detect from Apollo/ZoomInfo data (recent funding, headcount growth >20%, new offices, M&A)
+  - Leadership Change (10 pts): new CFO/Controller in past 12 months = +10 (audit relationship reset opportunity)
+  - Competitor Signal (8 pts): detect current auditor is Moss Adams/BDO/Sweeney Conrad from enrichment or connection analysis
+- **Competitor Signal constraint (enforce in prompt):** bolster-only — adds points only if base score (without Competitor Signal) is ≥50; a company scoring <50 on other dimensions cannot be qualified solely by Competitor Signal
+- **Score routing thresholds:** ≥70 = Qualify; 50–69 = Review; <50 = Skip
+- Scoring prompt must include: dimension definitions and weights, explicit sub-category industry mappings (e.g., "civil engineering" → Construction), model client calibration anchors from Phase 0.5.2, Competitor Signal constraint enforcement
+- Return `CompanyScoringResult` with score, dimension_breakdown, reasoning, flags (pe_backed, competitor_detected, leadership_change, growth_detected)
+
+**Task 4.1b — `services/ai_svc.py` (extend with `score_contact`):**
+- Add `score_contact(contact_data, company_context) → ContactScoringResult` function
+- **Model routing:** GPT-5.4 for scoring operations
+- **Five dimensions:**
+  - Title Match (30 pts): exact match to `icp.title_targeting` = 30; related = 20; tangential = 10
+  - Seniority Level (25 pts): C-suite = 25; VP = 20; Director = 15; Manager = 10
+  - LinkedIn Availability (20 pts): URL present = 20; missing = 0
+  - Tenure at Company (15 pts): 1–3 years = 15; <1 year = 10; >5 years = 5
+  - Email/Phone Availability (10 pts): both = 10; one = 5; neither = 0
+- **NOT a qualification gate:** Contact score is used only for intra-company contact prioritization; it never overrides Company ICP Score qualification decisions
+- Return `ContactScoringResult` with score, dimension_breakdown, reasoning
+
+**Task 4.2 — `services/scoring_svc.py`:**
+- Implement two functions:
+  - `score_companies(company_ids) → List[ScoredCompany]` — qualification gate
+  - `score_contacts(prospect_ids) → List[ScoredContact]` — prioritization only
+- **Company scoring flow:** apply hard exclusions first (Healthcare/Technology/Financial institutions → auto-disqualify); call `ai_svc.score_company()`; store results in `companies.scoring` JSONB (score, breakdown, reasoning, flags); route: ≥70 → `'qualified'`, 50–69 → `'review_required'`, <50 → `'auto_skipped'` with `skip_reason`; `pe_backed` flag → `requires_review: true` regardless of score
+- **Contact scoring flow:** only score contacts at qualified companies (≥70 or Admin-approved); call `ai_svc.score_contact()`; store in `prospects.scoring` JSONB (score, breakdown, reasoning); high score → prioritize; low score → lower priority but still eligible if company is qualified
+- Emit `company_scored` and `prospect_scored` events
+- Update `pipeline_state.contacts_scored` counter
+
+**Task 4.3 — `lib/apify.py` (safety-critical wrapper):**
+- Create as a peer to `lib/apollo.py`, `lib/zoominfo.py`, `lib/google_places.py` — not an ad hoc utility; direct Apify API access from skills or services is explicitly prohibited
+- Implement: `scrape_posts(linkedin_username) → List[Post]` (Posts Scraper; pass `username` param not URL; filter by `author.publicIdentifier` to exclude reposts) and `scrape_comments(linkedin_url) → List[Comment]` (input `{profiles: [url], maxItems: 10}`)
+- **Actor run lifecycle management** (start → poll → fetch): actors run asynchronously; start actor run, poll for completion, fetch results; handle states: READY, RUNNING, SUCCEEDED, FAILED, TIMED-OUT, ABORTED; poll with exponential backoff (initial 2s, max 30s, timeout 5 minutes)
+- **Actor ID allowlist (hard-coded, enforced):** Posts Scraper: `A3cAPGpwBEG8RJwse`; Comments Scraper: `FiHYLewnJwS6GnRpo`; any call with actor ID not in allowlist MUST hard-fail before the API call
+- **Activity classification (owned by wrapper, NOT delegated):** Active (≤30 days); Moderate (≤90 days); Inactive (≤180 days or older); Unknown (failed or no posts); return classification alongside raw data
+- **Role verification:** cross-check Apollo job title against LinkedIn headline; flag `title_mismatch: true` on discrepancy
+- **Quota/billing error handling:** Catch HTTP 402 and billing-related errors; surface descriptive, actionable error message (e.g., "Apify account quota exhausted. Check Apify dashboard and add credits before retrying.")
+- **Wrapper responsibilities** (NOT delegated to Oz): auth/header construction (Apify token injection), retries/backoff (exponential on rate limits and transient failures), response normalization, activity logging (`action_type: 'apify_posts_scrape'` / `'apify_comments_scrape'`)
+
+**Task 4.4 — `services/linkedin_validation_svc.py`:**
+- Implement `validate_linkedin(prospect_ids) → List[ValidationResult]` function
+- For prospects with LinkedIn URLs, call `apify.scrape_posts()` and `apify.scrape_comments()`
+- Receive pre-computed activity classification from wrapper (Active/Moderate/Inactive/Unknown) — classification logic lives in `lib/apify.py`, not here
+- Store in `prospects.linkedin_activity` JSONB: `status`, `last_post_date`, `post_count`, `validated_at`, `title_mismatch`
+- Update queue priority: boost Active, penalize Inactive, flag `title_mismatch` for review
+
+**Task 4.5 — Discovery Skill Step 4 Activation (`.agents/skills/discovery/SKILL.md`):**
+- Update Step 4 to invoke `scoring_svc.score_companies()`, `scoring_svc.score_contacts()`, and `linkedin_validation_svc.validate_linkedin()`
+- Define agent behavior in playbook: reads thresholds from Supabase; **company scoring phase** — invokes `score_companies()`, routes (≥70 qualify, 50–69 review, <50 skip), presents summary "{n} companies qualified, {m} require review, {p} auto-skipped"; **contact scoring phase (qualified companies only)** — invokes `score_contacts()`, uses Contact Engagement Score for intra-company prioritization; invokes LinkedIn validation for top-scored contacts; updates `pipeline_state.current_phase` to `'complete'`; **releases concurrency lock** — clears `locked_by_run_id`
+- Define checkpoint events: `company_scoring_complete`, `contact_scoring_complete`, `validation_complete`, `discovery_skill_complete`
+- Add HITL pause point after company scoring for Admin review of 50–69 score companies
+- Configure skill completion trigger: emit `prospects_ready_for_review` event
+- Test end-to-end: Oz trigger → complete Discovery Skill → scored/validated prospects in queue
+
+Implement the message generation and HITL review capability (Phase 5). The goal is to extend `ai_svc.py` with a message generation wrapper using GPT-5.4, build the batch review service and endpoints, activate the Oz Engagement Skill with account-specific differentiated voice profiles, and wire the message approval queue.
+
+**Task 5.1 — `services/message_generation_svc.py`:**
+- Implement `generate_messages(prospect_ids, linkedin_account_id) → List[Message]` function
+- Build the generation prompt with:
+  - **Account-specific voice profile:** Load Adrienne or Melinda voice profile from `docs/agents.md` (per Task 0.6); **NOT name-swapped templates** — prompt must generate substantively different messages for each account based on distinct voice characteristics
+  - Sender context from `tenants.settings.brand_voice` (Chad's overall brand voice)
+  - Personalization data: company info (Google Places), prospect title/industry (Apollo), ICP reasoning, competitor signal
+  - Character limit logic: check `linkedin_accounts.account_type` — free = 200 chars, premium = 300 chars
+  - VWC firm differentiators: partner-level attention, 50-year history, independence value proposition
+- Call `ai_svc.generate_messages()` with model routing to GPT-5.4, generating all 4 messages in a single call: 1 connection note (step 0) + 3 follow-ups (steps 1/2/3) for narrative coherence
+- Store in `messages` table with fields: `step`, `original_text`, `status: 'draft'`, `generation` JSONB (model, tokens, prompt_version, voice_profile_used)
+
+**Task 5.2 — `services/batch_review_svc.py` & `routers/batch_review.py`:**
+- Add `create_batch(campaign_id, prospect_ids) → BatchResult` to `services/batch_review_svc.py`
+- Generate a secure token; store only the SHA-256 hash in `batch_reviews.token_hash` (never store raw token)
+- Set expiration to 14 days; initialize counters
+- Create `routers/batch_review.py` with:
+  - `GET /review/{token}` → validate token, return Airtable-style prospect list with scores, reasoning, and messages
+  - `POST /review/{token}/decisions` → bulk update with approve/skip/blacklist decisions keyed by prospect_ids
+- Update `prospects` status based on decisions; increment batch counters
+- Emit `batch_review_completed` event when all prospects have been decided
+- Return batch URL for Engagement Skill to include in notification
+
+**Task 5.3 — Engagement Skill Message Generation Activation (`.agents/skills/engagement/SKILL.md`):**
+- Update the Engagement Skill to invoke `message_generation_svc.generate_messages()` and `batch_review_svc.create_batch()`
+- Configure Oz trigger: event-driven (on `prospect_approved` event from batch review or queue)
+- Define agent behavior in playbook: reads approved prospect list and associated LinkedIn account; invokes message generation per prospect; creates batch review with generated messages; notifies Admin with batch review URL; HITL pause point — skill pauses until batch review is completed
+- Define checkpoint event `messages_approved` to trigger outreach
+- Test end-to-end: Oz trigger → message generation → batch review → approved messages ready
+
+**Task 5.4 — `routers/queue.py`:**
+- Add/update the following endpoints:
+  - `GET /queue/messages` → return approved prospects with draft messages, filtered by `my_account_ids()`
+  - `POST /queue/messages/{id}/approve` → set message `status: 'approved'`, schedule send
+  - `POST /queue/messages/{id}/edit` → update `approved_text`, set `was_edited: true`
+  - `POST /queue/messages/{id}/reject` → set `status: 'rejected'`, stop sequence
+- Ensure `was_edited` boolean is tracked for Agent 6 intelligence learning
+
+Implement the outreach execution capability (Phase 6). The goal is to build the Unipile safety-critical wrapper with pre-flight guards and mandatory delays, the outreach scheduler service, 4-layer acceptance detection, activate the Engagement, Nurture, Conversion, and Intelligence Skills, build the Reply.io evaluation wrapper, and produce a tool comparison deliverable — completing all agent capabilities.
+
+**Task 6.1 — `lib/unipile.py` (safety-critical wrapper):**
+- Create as a peer to `lib/apollo.py`, `lib/zoominfo.py`, `lib/google_places.py`, `lib/apify.py` — not an ad hoc utility; direct Unipile API access from skills or services is explicitly prohibited
+- Implement functions: `send_connection_request(account_id, linkedin_url, note) → SendResult`, `send_message(chat_id, text) → SendResult`, `get_conversation(chat_id) → Conversation`, `get_relations(account_id) → List[Relation]`, `get_profile(linkedin_url) → Profile`
+- **Pre-flight safety guard on every write operation** (`send_connection_request`, `send_message`): six sequential checks; any failure aborts before the call reaches Unipile: (1) account `status: 'active'` in `linkedin_accounts`; (2) `check_rate_limit(account, action)` counts today's rows in `activity_log`; (3) `is_business_hours(account)` — 8 AM–6 PM tenant timezone, no weekend connections; (4) `provider_config.cooldown_until` has passed; (5) prospect not already 1st-degree connection; (6) no pending invitation in `invitations` table
+- **Activity logging as authoritative rate limit mechanism:** log every API call to `activity_log` (partitioned quarterly) with `action_type`, `account_id`, `created_at` — source of truth for `check_rate_limit()` counts
+- **Random delay injection (mandatory, non-bypassable):** 45–120 second random delay between consecutive LinkedIn actions per account; bot fingerprint prevention; cannot be disabled or overridden
+- **Profile lookup enforcement:** all `get_profile()` calls MUST include `linkedin_sections=*` query param
+- **Chat ID management:** track `chat_id` per prospect in `prospects.sequence.chat_id` JSONB; capture `chat_id` from first message response and persist to ensure follow-ups route to correct thread
+- **Wrapper responsibilities** (NOT delegated to Oz): auth/header construction (DSN/API key from `linkedin_accounts.provider_config`), retries/backoff (exponential with jitter on 429/5xx), response normalization, circuit breaker (on 422/429, pause all account actions and set `provider_config.cooldown_until`)
+- On success: set message `status: 'sent'` and `sent_at`; update prospect status
+
+**Task 6.2 — `services/outreach_scheduler_svc.py`:**
+- Implement `schedule_pending_messages() → ScheduleResult` function
+- Query: `SELECT * FROM messages WHERE status IN ('approved','scheduled') AND scheduled_for <= NOW() AND sent_at IS NULL`
+- Validate before scheduling: `is_business_hours(account)` (8 AM–6 PM, no weekends for connections); `check_rate_limit(account, 'connection')` (within 6-10/day ramp-up limit)
+- Apply random delay calculation (45-120 seconds between actions)
+- Write calculated send time to `messages.scheduled_for`
+
+**Task 6.3 — Engagement Skill Outreach Activation (`.agents/skills/engagement/SKILL.md`):**
+- Update skill to invoke `outreach_scheduler_svc.schedule_pending_messages()` and `unipile.send_connection_request()`
+- Agent behavior: reads approved messages; invokes scheduler; executes connection requests; defers if daily rate limit is reached
+- Define checkpoint event `connections_sent` with count; test end-to-end
+
+**Task 6.4 — `services/acceptance_detection_svc.py`:**
+- Implement 4-layer detection (Unipile's `invitations/sent` endpoint is broken): (1) webhook handler for `new_message` — check if sender is prospect; (2) webhook handler for `new_relation` — direct acceptance signal; (3) polling function (every 30 min) via `unipile.get_relations()`; (4) fallback: individual profile lookup via Unipile + LinkUp
+- On detection: update `invitations.accepted_at`, `invitations.detection_method`, `prospects.status → 'connected'`; emit `connection_accepted` event to trigger Nurture Skill
+
+**Task 6.5 — Nurture Skill Activation (`.agents/skills/nurture/SKILL.md`):**
+- Configure Oz trigger: event-driven (on `connection_accepted`)
+- Agent behavior: retrieve prospect and message sequence; queue Message 1; wait 3-5 days (configurable in `campaigns.timing`); queue Message 2, wait, queue Message 3; pre-condition before each message — check for `is_sender: 0` in conversation and cancel sequence if found
+- Checkpoint events: `followup_1_sent`, `followup_2_sent`, `followup_3_sent`, `sequence_complete`
+
+**Task 6.6 — Conversion Skill Activation (`.agents/skills/conversion/SKILL.md`):**
+- Configure Oz trigger: webhook (on `new_message` from Unipile where `is_sender: 0`)
+- Agent behavior: detects reply; invokes `ai_svc.classify_reply()` (converted/interested/deferred/objection/decline/OOO); routes to appropriate queue; cancels pending Nurture messages
+- Emit `reply_classified` event with classification result
+
+**Task 6.7 — Intelligence Skill Activation (`.agents/skills/intelligence/SKILL.md`):**
+- Configure Oz trigger: scheduled (Monday 8 AM)
+- Agent behavior: aggregates weekly metrics; analyzes `was_edited` patterns; invokes `ai_svc.suggest_icp_refinements()`; generates weekly report
+- Emit: `weekly_report_generated`, `icp_refinement_suggested`
+
+**Task 6.8 — `lib/reply_io.py`:**
+- Create wrapper following provider-agnostic pattern from `linkedin_accounts.provider`
+- Implement: `create_sequence(steps)`, `add_contact(sequence_id, prospect)`, `start_sequence(sequence_id)` using Reply API v3
+- Map LinkedIn step types: `LinkedInConnect`, `LinkedInMessage`
+- Configure webhook receiver for `linkedin_message_sent`, `linkedin_connection_request_sent` events
+- Store `outreach_provider` on each message record; note Reply API 3.0 is in closed beta
+
+**Task 6.9 — `docs/tool-comparison-report.md`:**
+- Evaluate Unipile vs Reply.io vs Sales Navigator vs Knowledge Net across 6 dimensions: Search Quality, Enrichment Rate, Contact Coverage, API Capabilities, Cost per Prospect, Ban Risk
+- Include raw data tables from Phase 3 `discovery_source` tracking
+- Add recommendation section with suggested production stack configuration
+- Submit to Joe for review before Chad presentation
+
+Implement Clerk-based authentication and multi-tenancy for production use (Phase 7). The goal is to configure Clerk organization roles, implement JWT-based tenant resolution in Supabase RLS functions, connect authentication to existing RLS policies, and ensure all Oz SKILL.md playbooks propagate tenant context through the entire wrapper invocation chain.
+
+**Task 7.1 — Clerk Organization Configuration:**
+- Configure Clerk Organizations with three roles: `developer` (yorCMO engineering), `admin` (yorCMO client team), `member` (client users)
+- Map Clerk roles to DB roles: `developer` → `admin`, `admin` → `admin`, `member` → `client` (per `master-architecture-plan.md` lines 52-55)
+- Configure Clerk JWT claims to include: `org_id`, `org_role`, `user_id`
+- Set up Clerk webhook for user/org events to sync with Supabase `users` table
+
+**Task 7.2 — JWT-Based Tenant Resolution:**
+- Implement `get_my_tenant_id()` Supabase function using `current_setting('request.jwt.claims', true)` to extract `org_id` from Clerk JWT
+- Implement `is_admin()` function checking `org_role` in JWT claims against `('developer', 'admin')`
+- Implement `my_account_ids()` function returning `users.settings->'linkedin_account_ids'` for the current user
+- Create `services/auth_svc.py` with `validate_clerk_jwt(token)` returning tenant_id, role, and user_id
+- Update FastAPI middleware to set Supabase RLS context from validated JWT claims
+
+**Task 7.3 — RLS Policy Integration:**
+- Verify all 11 tables have `tenant_id` column and RLS enabled (per `SCHEMA_V3.md`)
+- Update RLS policies to use the new `get_my_tenant_id()` instead of hardcoded values
+- Add client-scoped policies using `my_account_ids()` for: `prospects`, `messages`, `invitations`
+- Confirm `batch_reviews` has no RLS (token authentication handled at application layer)
+- Write integration tests verifying: admin sees all tenants, client sees only own tenant + assigned accounts
+- Document JWT claim flow in `docs/db/`
+
+**Task 7.4 — Oz Tenant Context Propagation:**
+- Update all SKILL.md playbooks to extract `tenant_id` from trigger context (event payload or authenticated session)
+- Pass tenant context through the entire skill execution chain to all wrapper calls
+- Update all service functions to accept `tenant_id` as a required parameter
+- Validate tenant isolation in integration tests: skills must not be able to access cross-tenant data
+- Document the tenant context propagation pattern for future skill development
