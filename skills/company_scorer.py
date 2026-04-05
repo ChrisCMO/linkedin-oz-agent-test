@@ -46,6 +46,7 @@ BLACKLIST_FILE = os.path.join(BASE_DIR, "data", "blacklist.csv")
 PSBJ_FILE = os.path.join(BASE_DIR, "docs", "deliverables", "week2", "universe",
                           "private", "psbj_family_owned_wa_2026_86.csv")
 
+TABLE = "raw_companies"  # Dashboard pipeline table
 SCORING_BATCH_SIZE = 15  # Companies per GPT call
 
 
@@ -221,7 +222,6 @@ def merge_enrichment(sb, company: dict, apollo_data: dict):
     updates = {}
     field_map = {
         "revenue": "revenue",
-        "employees": "employees_apollo",
         "linkedin_url": "linkedin_url",
         "website_url": "website",
         "industry": "industry",
@@ -229,20 +229,18 @@ def merge_enrichment(sb, company: dict, apollo_data: dict):
     }
     for apollo_key, db_key in field_map.items():
         if apollo_data.get(apollo_key) and not company.get(db_key):
-            val = apollo_data[apollo_key]
-            if isinstance(val, int) and db_key in ("employees_apollo",):
-                updates[db_key] = val
-            else:
-                updates[db_key] = str(val) if val else None
+            updates[db_key] = str(apollo_data[apollo_key])
 
-    source_data = company.get("source_data") or {}
-    source_data["apollo"] = apollo_data
-    updates["source_data"] = source_data
+    # Store employee count from Apollo in enrichment_data (raw_companies has
+    # a single 'employees' integer column — don't overwrite LinkedIn count)
+    enrichment_data = company.get("enrichment_data") or {}
+    enrichment_data["apollo"] = apollo_data
+    updates["enrichment_data"] = enrichment_data
     updates["pipeline_status"] = "enriched"
     updates["enriched_at"] = datetime.now(timezone.utc).isoformat()
     updates["enrichment_error"] = None
 
-    sb.table("companies_universe").update(updates).eq("id", company["id"]).execute()
+    sb.table(TABLE).update(updates).eq("id", company["id"]).execute()
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +251,7 @@ def get_raw_companies(sb, tenant_id: str, batch_id: str | None = None,
                       limit: int = 100) -> list[dict]:
     """Get companies ready for processing."""
     query = (
-        sb.table("companies_universe")
+        sb.table(TABLE)
         .select("*")
         .eq("tenant_id", tenant_id)
         .in_("pipeline_status", ["raw", "error"])
@@ -325,9 +323,9 @@ def preprocess_company(company: dict, apollo: ApolloClient,
         if match.get("ownership_type"):
             ownership = f"Private ({match['ownership_type']}, confirmed via PSBJ)"
 
-    # --- Store finance data in source_data for DB persistence ---
-    source_data = company.get("source_data") or {}
-    source_data["finance_scan"] = {
+    # --- Store finance data in enrichment_data for DB persistence ---
+    enrichment_data = company.get("enrichment_data") or {}
+    enrichment_data["finance_scan"] = {
         "contacts": finance_contacts,
         "best_contact": best_finance,
         "has_cfo": has_cfo,
@@ -336,15 +334,21 @@ def preprocess_company(company: dict, apollo: ApolloClient,
         "scanned_at": datetime.now(timezone.utc).isoformat(),
     }
     if match:
-        source_data["psbj"] = match
+        enrichment_data["psbj"] = match
+
+    # Apollo employees from enrichment_data (if enriched)
+    apollo_employees = ""
+    apollo_enrich = enrichment_data.get("apollo", {})
+    if apollo_enrich.get("employees"):
+        apollo_employees = str(apollo_enrich["employees"])
 
     # Build dict for score_companies_v2()
     return {
         "company_id": company.get("id", ""),
         "company_name": name,
         "industry": company.get("industry", ""),
-        "linkedin_employees": company.get("employees_linkedin", ""),
-        "apollo_employees": company.get("employees_apollo", ""),
+        "linkedin_employees": company.get("employees", ""),  # raw_companies.employees
+        "apollo_employees": apollo_employees,
         "revenue": revenue,
         "location": company.get("location", ""),
         "ownership": ownership,
@@ -358,7 +362,7 @@ def preprocess_company(company: dict, apollo: ApolloClient,
         "finance_contact_linkedin": finance_contact_linkedin,
         "notes": notes,
         # Pass through for DB update
-        "_source_data": source_data,
+        "_enrichment_data": enrichment_data,
     }
 
 
@@ -394,7 +398,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
         # --- Step 1b: Blacklist check ---
         if is_blacklisted(name, domain, blacklist):
             print("BLACKLISTED — skipping")
-            sb.table("companies_universe").update({
+            sb.table(TABLE).update({
                 "pipeline_status": "scored",
                 "pipeline_action": "SKIP",
                 "icp_score": 0,
@@ -407,7 +411,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
         try:
             # --- Step 2: Apollo org enrichment ---
             if company.get("pipeline_status") in ("raw", "error"):
-                sb.table("companies_universe").update({
+                sb.table(TABLE).update({
                     "pipeline_status": "enriching",
                 }).eq("id", company_id).execute()
 
@@ -417,26 +421,26 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
                         merge_enrichment(sb, company, apollo_data)
                         logger.info("Enriched %s via Apollo", name)
                     else:
-                        sb.table("companies_universe").update({
+                        sb.table(TABLE).update({
                             "pipeline_status": "enriched",
                             "enriched_at": datetime.now(timezone.utc).isoformat(),
                         }).eq("id", company_id).execute()
                 else:
-                    sb.table("companies_universe").update({
+                    sb.table(TABLE).update({
                         "pipeline_status": "enriched",
                         "enriched_at": datetime.now(timezone.utc).isoformat(),
                     }).eq("id", company_id).execute()
 
             # Reload after enrichment
-            refreshed = sb.table("companies_universe").select("*").eq("id", company_id).single().execute()
+            refreshed = sb.table(TABLE).select("*").eq("id", company_id).single().execute()
             company = refreshed.data
 
             # --- Steps 3b/3c/3d: Finance scan + PSBJ + revenue mismatch ---
             scoring_input = preprocess_company(company, apollo, psbj_data)
 
-            # Persist source_data with finance scan results
-            sb.table("companies_universe").update({
-                "source_data": scoring_input["_source_data"],
+            # Persist enrichment_data with finance scan results
+            sb.table(TABLE).update({
+                "enrichment_data": scoring_input["_enrichment_data"],
             }).eq("id", company_id).execute()
 
             scoring_queue.append((company, scoring_input))
@@ -444,7 +448,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
 
         except Exception as e:
             logger.error("Failed to process %s: %s", name, e)
-            sb.table("companies_universe").update({
+            sb.table(TABLE).update({
                 "pipeline_status": "error",
                 "enrichment_error": str(e)[:500],
             }).eq("id", company_id).execute()
@@ -464,7 +468,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
 
     # Mark all as scoring
     for company, _ in scoring_queue:
-        sb.table("companies_universe").update({
+        sb.table(TABLE).update({
             "pipeline_status": "scoring",
         }).eq("id", company["id"]).execute()
 
@@ -495,7 +499,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
                 result = score_lookup.get(company_id) or score_lookup.get(name)
                 if not result:
                     logger.warning("No score returned for %s", name)
-                    sb.table("companies_universe").update({
+                    sb.table(TABLE).update({
                         "pipeline_status": "error",
                         "scoring_error": "No score returned from v2 scorer",
                     }).eq("id", company_id).execute()
@@ -515,7 +519,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
                 breakdown = result.get("breakdown", {})
                 breakdown_str = " | ".join(f"{k}: {v}" for k, v in breakdown.items())
 
-                sb.table("companies_universe").update({
+                sb.table(TABLE).update({
                     "icp_score": score,
                     "pipeline_action": action,
                     "score_breakdown": breakdown_str,
@@ -534,7 +538,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
         except Exception as e:
             logger.error("Batch scoring failed: %s", e)
             for company, _ in batch:
-                sb.table("companies_universe").update({
+                sb.table(TABLE).update({
                     "pipeline_status": "error",
                     "scoring_error": f"Batch scoring failed: {str(e)[:400]}",
                 }).eq("id", company["id"]).execute()
