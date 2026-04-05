@@ -12,7 +12,7 @@ import requests
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger()
 
-GOOGLE_API_KEY = "AIzaSyDBFl9GysZkM42uPS1wdKh8tTKeedWP67o"
+GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
 HEADERS = {
     "X-Goog-Api-Key": GOOGLE_API_KEY,
     "X-Goog-FieldMask": (

@@ -21,7 +21,7 @@ POSTS_ACTOR = "A3cAPGpwBEG8RJwse"
 COMMENTS_ACTOR = "FiHYLewnJwS6GnRpo"
 
 GP_HEADERS = {
-    "X-Goog-Api-Key": "AIzaSyDBFl9GysZkM42uPS1wdKh8tTKeedWP67o",
+    "X-Goog-Api-Key": os.environ["GOOGLE_API_KEY"],
     "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount,places.businessStatus",
     "Content-Type": "application/json",
 }
