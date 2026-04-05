@@ -14,7 +14,6 @@ sys.path.insert(0, str(project_root))
 from db.connect import get_supabase  # noqa: E402
 from lib.unipile import UnipileClient  # noqa: E402
 from lib.apollo import ApolloClient  # noqa: E402
-from lib.linkup import LinkUpClient  # noqa: E402
 from lib.outlook import OutlookClient  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -25,7 +24,6 @@ _unipile = None
 _supabase = None
 _apollo = None
 _openai = None
-_linkup = None
 _outlook = None
 
 
@@ -48,13 +46,6 @@ def get_apollo() -> ApolloClient:
     if _apollo is None:
         _apollo = ApolloClient()
     return _apollo
-
-
-def get_linkup() -> LinkUpClient:
-    global _linkup
-    if _linkup is None:
-        _linkup = LinkUpClient()
-    return _linkup
 
 
 def get_openai():
