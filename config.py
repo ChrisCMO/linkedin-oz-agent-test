@@ -23,6 +23,12 @@ MICROSOFT_CLIENT_SECRET = os.environ["MICROSOFT_CLIENT_SECRET"]
 MICROSOFT_TENANT = os.environ["MICROSOFT_TENANT"]
 MICROSOFT_SENDER_EMAIL = os.environ.get("MICROSOFT_SENDER_EMAIL", "ai_team@yorcmo.com")
 
+# Apollo
+APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
+
+# OpenAI
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
 # Warp Oz
 WARP_API_KEY = os.environ.get("WARP_API_KEY", "")
 OZ_ENVIRONMENT_ID = os.environ.get("OZ_ENVIRONMENT_ID", "")
