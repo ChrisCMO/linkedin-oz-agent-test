@@ -271,8 +271,12 @@ def enrich_via_apollo(domain: str) -> dict | None:
     try:
         resp = requests.post(
             "https://api.apollo.io/api/v1/organizations/enrich",
-            headers={"Content-Type": "application/json", "Cache-Control": "no-cache"},
-            json={"api_key": api_key, "domain": domain},
+            headers={
+                "Content-Type": "application/json",
+                "Cache-Control": "no-cache",
+                "X-Api-Key": api_key,
+            },
+            json={"domain": domain},
             timeout=30,
         )
         if resp.status_code == 200:
