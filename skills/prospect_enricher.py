@@ -31,7 +31,7 @@ from lib.apify import (
     PROFILE_SCRAPER, SERP_ACTOR, JUNK_DOMAINS,
 )
 from lib.xray import xray_discover_finance_contacts, xray_find_contact_linkedin
-from mvp.backend.services.scoring import score_prospects, classify_contact_activity
+from mvp.backend.services.scoring import classify_contact_activity
 from mvp.backend.services.message_gen_svc import generate_outreach_for_prospect
 from skills.helpers import setup_logging
 
@@ -358,43 +358,15 @@ def validate_linkedin(contact: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def score_and_generate(contacts: list[dict], company: dict, icp_config: dict) -> list[dict]:
-    """Score contacts and generate outreach messages."""
+    """Inherit company ICP score and generate outreach messages."""
     if not contacts:
         return []
 
-    # Build scoring input
-    scoring_input = []
+    # Contacts inherit the company's ICP score — the company was already scored
+    # during the company scoring pipeline. No need to re-score at contact level.
+    company_score = company.get("icp_score", 0)
     for c in contacts:
-        scoring_input.append({
-            "apollo_id": c.get("apollo_id", c.get("name", "")),
-            "name": c.get("name", ""),
-            "title": c.get("title", ""),
-            "seniority": c.get("seniority", ""),
-            "company_name": company.get("name", ""),
-            "company_industry": company.get("industry", ""),
-            "company_employees": company.get("employees_linkedin") or company.get("employees_apollo"),
-            "company_revenue": company.get("revenue", ""),
-            "company_location": company.get("location", ""),
-            "person_location": c.get("location", ""),
-            "has_linkedin": bool(c.get("linkedin_url")),
-        })
-
-    # Score
-    try:
-        scores = score_prospects(scoring_input, icp_config or {})
-        score_map = {}
-        for s in scores:
-            key = s.get("apollo_id", s.get("name", ""))
-            score_map[key] = s
-
-        for c in contacts:
-            key = c.get("apollo_id", c.get("name", ""))
-            result = score_map.get(key, {})
-            c["icp_score"] = result.get("score", 0)
-            c["score_breakdown"] = result.get("breakdown", {})
-            c["scoring_reasoning"] = result.get("reasoning", "")
-    except Exception as e:
-        logger.error("Contact scoring failed: %s", e)
+        c["icp_score"] = company_score
 
     # Generate messages for each contact
     for c in contacts:
