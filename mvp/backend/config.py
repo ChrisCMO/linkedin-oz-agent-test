@@ -51,8 +51,12 @@ def get_apollo() -> ApolloClient:
 def get_openai():
     global _openai
     if _openai is None:
+        import httpx
         from openai import OpenAI
-        _openai = OpenAI()  # uses OPENAI_API_KEY env var
+        # Use the agent CA bundle if present (Warp sandbox has a non-standard cert path)
+        _AGENT_CA = "/agent/etc/ssl/certs/ca-certificates.crt"
+        ca_bundle = _AGENT_CA if os.path.exists(_AGENT_CA) else True
+        _openai = OpenAI(http_client=httpx.Client(verify=ca_bundle))  # uses OPENAI_API_KEY env var
     return _openai
 
 
