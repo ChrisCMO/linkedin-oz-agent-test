@@ -4,12 +4,15 @@ Triggered by Oz agent or run directly:
     python3 -m skills.company_scorer --tenant-id Y [--batch-id X] [--limit N]
 
 Pipeline per company:
+  0.  LinkedIn company scrape — batch Apify call for li_followers, employees, etc.
   1b. Blacklist check        — skip known VWC clients
-  2.  Apollo org enrich      — fill revenue, employees, ownership
+  2.  Apollo org enrich      — fill revenue, employees, ownership (junk domain filter)
   3b. Finance title scan     — Apollo free people search for CFO/Controller
   3c. PSBJ cross-reference   — validate revenue, confirm family ownership
   3d. Revenue mismatch       — flag suspect revenue vs employee count
   4.  Score via score_companies_v2() — 7-dimension scoring with organizational complexity
+  4b. X-ray rescue           — Tier 2+3 for REVIEW companies with 0 finance contacts
+  4c. Rescore rescued        — REVIEW → PROCEED if finance contacts found
 
 Status flow: raw → enriching → enriched → scoring → scored
 On error: → error (with enrichment_error or scoring_error)
@@ -30,6 +33,11 @@ import requests
 import config
 from db.connect import get_supabase
 from lib.apollo import ApolloClient
+from lib.apify import (
+    run_actor, extract_domain, JUNK_DOMAINS,
+    COMPANY_SCRAPER,
+)
+from lib.xray import xray_discover_finance_contacts, xray_find_contact_linkedin
 from mvp.backend.services.scoring import score_companies_v2, detect_revenue_mismatch
 from skills.helpers import setup_logging
 
@@ -114,6 +122,88 @@ def psbj_match(company_name: str, psbj_data: dict) -> dict | None:
         if psbj_name in name_lower or name_lower in psbj_name:
             return data
     return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: LinkedIn company page scrape (batch)
+# ---------------------------------------------------------------------------
+
+def linkedin_scrape_batch(sb, companies: list[dict]):
+    """Batch-scrape LinkedIn company pages for companies missing li_followers.
+
+    Fills: li_followers, li_description, li_tagline, li_founded, employees (from LI).
+    Also extracts domain from LinkedIn website when company has no domain.
+    """
+    needs_scrape = [
+        c for c in companies
+        if c.get("linkedin_url") and not c.get("li_followers")
+    ]
+    if not needs_scrape:
+        print("  Phase 0: All companies already have LinkedIn data — skipping")
+        return
+
+    urls = [c["linkedin_url"] for c in needs_scrape]
+    print(f"  Phase 0: LinkedIn scrape for {len(urls)} companies...")
+    li_results = run_actor(COMPANY_SCRAPER, {"companies": urls})
+    print(f"    Got {len(li_results)} results")
+
+    # Index results by URL
+    li_by_url = {}
+    for item in li_results:
+        url = item.get("linkedinUrl", item.get("url", ""))
+        if url:
+            li_by_url[url.rstrip("/")] = item
+
+    for c in needs_scrape:
+        li_url = c.get("linkedin_url", "").rstrip("/")
+        li = li_by_url.get(li_url)
+        if not li:
+            continue
+
+        updates = {}
+        emp = li.get("employeeCount")
+        if emp and not c.get("employees"):
+            updates["employees"] = int(emp)
+        followers = li.get("followerCount")
+        if followers:
+            updates["li_followers"] = int(followers)
+        tagline = li.get("tagline")
+        if tagline:
+            updates["li_tagline"] = tagline
+        desc = li.get("description")
+        if desc:
+            updates["li_description"] = desc
+        founded = (li.get("foundedOn") or {}).get("year")
+        if founded:
+            updates["li_founded"] = str(founded)
+
+        # Extract domain from LinkedIn website field
+        website = li.get("website") or li.get("websiteUrl") or ""
+        if website and not c.get("domain"):
+            new_domain = extract_domain(website)
+            if new_domain:
+                updates["domain"] = new_domain
+                updates["website"] = website
+
+        # Store full scrape data in enrichment_data
+        enrichment_data = c.get("enrichment_data") or {}
+        enrichment_data["linkedin_scrape"] = {
+            "employeeCount": emp,
+            "followerCount": followers,
+            "tagline": tagline,
+            "description": (desc or "")[:200],
+            "founded": founded,
+            "website": website,
+            "scraped_at": datetime.now(timezone.utc).isoformat(),
+        }
+        updates["enrichment_data"] = enrichment_data
+
+        if updates:
+            sb.table(TABLE).update(updates).eq("id", c["id"]).execute()
+            # Update in-memory copy for subsequent phases
+            c.update(updates)
+            logger.info("  LinkedIn scraped %s: %s emp, %s followers",
+                        c.get("name", "?"), emp, followers)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +472,9 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
     print(f"  Blacklist: {len(blacklist['names'])} names, {len(blacklist['domains'])} domains")
     print(f"  PSBJ: {len(psbj_data)} companies loaded")
 
+    # Phase 0: Batch LinkedIn company page scrape
+    linkedin_scrape_batch(sb, companies)
+
     scored_count = 0
     error_count = 0
     skipped_count = 0
@@ -393,6 +486,14 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
         company_id = company["id"]
         name = company.get("name", "Unknown")
         domain = company.get("domain", "")
+
+        # Junk domain filter — facebook.com, instagram.com, etc.
+        if domain and domain.lower() in JUNK_DOMAINS:
+            logger.info("Junk domain filtered: %s → %s", name, domain)
+            domain = ""
+            sb.table(TABLE).update({"domain": None}).eq("id", company_id).execute()
+            company["domain"] = ""
+
         print(f"  [{i+1}/{len(companies)}] {name}...", end=" ", flush=True)
 
         # --- Step 1b: Blacklist check ---
@@ -546,6 +647,126 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
             print(f"ERROR: {e}")
 
         time.sleep(1)
+
+    # Phase 3: X-ray rescue for REVIEW companies with 0 finance contacts
+    review_no_contacts = []
+    for company, si in scoring_queue:
+        refreshed = sb.table(TABLE).select("pipeline_action, enrichment_data").eq("id", company["id"]).single().execute()
+        if not refreshed.data:
+            continue
+        action = refreshed.data.get("pipeline_action")
+        enrich = refreshed.data.get("enrichment_data") or {}
+        finance_contacts = (enrich.get("finance_scan") or {}).get("contacts", [])
+        if action == "REVIEW" and not finance_contacts:
+            review_no_contacts.append((company, si))
+
+    if review_no_contacts:
+        print(f"\n--- Phase 3: X-ray rescue for {len(review_no_contacts)} REVIEW companies ---")
+        rescore_needed = []
+
+        for company, si in review_no_contacts:
+            name = company.get("name", "Unknown")
+            domain = company.get("domain", "")
+            print(f"  X-ray: {name}...", end=" ", flush=True)
+
+            xray_result = xray_discover_finance_contacts(name, domain=domain or None)
+            verified = xray_result.get("verified", [])
+
+            # Store X-ray results in enrichment_data
+            enrichment_data = company.get("enrichment_data") or {}
+            enrichment_data["xray_rescue"] = {
+                "raw_contacts": len(xray_result.get("contacts", [])),
+                "verified": [
+                    {"name": c["name"], "title": c["title"],
+                     "linkedin_url": c.get("linkedin_url", "")}
+                    for c in verified
+                ],
+                "rejected": [
+                    {"name": c["name"], "reason": c.get("reason", "")}
+                    for c in xray_result.get("rejected", [])
+                ],
+                "searched_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+            sb.table(TABLE).update({
+                "enrichment_data": enrichment_data,
+            }).eq("id", company["id"]).execute()
+
+            if verified:
+                has_cfo = any("cfo" in c["title"].lower() or "chief financial" in c["title"].lower() for c in verified)
+                has_controller = any("controller" in c["title"].lower() for c in verified)
+                titles_found = ", ".join(c["title"] for c in verified)
+
+                # Update finance_scan in enrichment_data
+                enrichment_data["finance_scan"] = enrichment_data.get("finance_scan", {})
+                enrichment_data["finance_scan"]["contacts"] = verified
+                enrichment_data["finance_scan"]["has_cfo"] = has_cfo
+                enrichment_data["finance_scan"]["has_controller"] = has_controller
+                enrichment_data["finance_scan"]["titles_found"] = titles_found
+                enrichment_data["finance_scan"]["source"] = "xray_tier2"
+
+                sb.table(TABLE).update({
+                    "enrichment_data": enrichment_data,
+                }).eq("id", company["id"]).execute()
+
+                company["enrichment_data"] = enrichment_data
+                rescore_needed.append((company, si, verified, has_cfo, has_controller, titles_found))
+                print(f"found {len(verified)} verified → will rescore")
+            else:
+                print("no contacts found")
+
+            time.sleep(1)
+
+        # Phase 4: Rescore rescued companies
+        if rescore_needed:
+            print(f"\n--- Phase 4: Rescoring {len(rescore_needed)} companies ---")
+            rescore_inputs = []
+            rescore_companies = []
+
+            for company, si, verified, has_cfo, has_controller, titles_found in rescore_needed:
+                best = verified[0]
+                rescore_inputs.append({
+                    **si,
+                    "finance_titles": titles_found,
+                    "has_cfo": has_cfo,
+                    "has_controller": has_controller,
+                    "finance_contact_name": best["name"],
+                    "finance_contact_linkedin": best.get("linkedin_url", ""),
+                })
+                rescore_companies.append(company)
+
+            try:
+                new_scores = score_companies_v2(rescore_inputs)
+                score_map = {
+                    s.get("company_id", s.get("company_name", "")): s
+                    for s in new_scores
+                }
+
+                for company, _ in zip(rescore_companies, rescore_inputs):
+                    result = score_map.get(company["id"]) or score_map.get(company.get("name", ""))
+                    if not result:
+                        continue
+
+                    old_score = sb.table(TABLE).select("icp_score").eq("id", company["id"]).single().execute().data.get("icp_score", 0)
+                    new_score = result.get("score", 0)
+                    action = "PROCEED" if new_score >= 80 else "REVIEW" if new_score >= 60 else "HARD EXCLUDE" if new_score == 0 else "SKIP"
+                    breakdown = result.get("breakdown", {})
+                    breakdown_str = " | ".join(f"{k}: {v}" for k, v in breakdown.items())
+
+                    sb.table(TABLE).update({
+                        "icp_score": new_score,
+                        "pipeline_action": action,
+                        "score_breakdown": breakdown_str,
+                        "reasoning": result.get("reasoning", ""),
+                        "why_this_score": result.get("calibration_notes", ""),
+                        "scored_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", company["id"]).execute()
+
+                    print(f"  {company.get('name', '?')}: {old_score} → {new_score} ({action})")
+
+            except Exception as e:
+                logger.error("Rescore failed: %s", e)
+                print(f"  Rescore ERROR: {e}")
 
     return scored_count, error_count, skipped_count
 

@@ -26,6 +26,9 @@ MICROSOFT_SENDER_EMAIL = os.environ.get("MICROSOFT_SENDER_EMAIL", "ai_team@yorcm
 # Apollo
 APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
 
+# Apify
+APIFY_API_KEY = os.environ.get("APIFY_API_KEY", "")
+
 # OpenAI
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 

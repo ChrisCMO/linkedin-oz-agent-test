@@ -123,25 +123,42 @@ Bare invites don't create a chat on acceptance, so webhooks don't work reliably.
 ## Oz Environment
 
 - **Environment ID:** `iR37ujTjeo7Ne6pZ9vHRcI` (name: `vwc-linkedin`)
+- **GitHub repo:** `ChrisCMO/linkedin-oz-agent-test`
 - **Docker image:** `warpdotdev/dev-base:latest-agents`
-- **Setup command:** `pip install --break-system-packages -r /workspace/linkedin-automation-test/requirements.txt`
+- **Setup command:** `pip install --break-system-packages -r /workspace/linkedin-oz-agent-test/requirements.txt`
+- **Workspace path:** `/workspace/linkedin-oz-agent-test`
 - **Slack:** Connected (team-wide)
 - **Skills:** Use `python3` (system Python, not venv)
+
+### Dashboard → Oz Integration
+
+The "Enrich & Score" button triggers Oz via REST API:
+```
+dashboard/src/app/api/trigger-scoring/route.ts
+  → POST https://app.warp.dev/api/v1/agent/run
+  → Oz runs: python3 -m skills.company_scorer --tenant-id <ID>
+  → Results written to raw_companies table
+  → Dashboard auto-polls every 5s while processing
+```
+Requires `WARP_API_KEY` and `OZ_ENVIRONMENT_ID` in `dashboard/.env.local`.
 
 ### Manual Test Commands
 
 ```bash
-# Test batch-sender (sends review email, no LinkedIn actions)
-oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt 'Run: cd /workspace/linkedin-automation-test && python3 -m skills.batch_sender --file test_prospects.csv --name "Chris" --email "christopher@yorcmo.com"'
+# Test company-scorer v2 (enrichment + scoring pipeline)
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt 'Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --limit 3'
 
-# Test invite-sender (will skip outside business hours)
-oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-automation-test && python3 -m skills.invite_sender"
+# Test batch-sender
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt 'Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.batch_sender --file test_prospects.csv --name "Chris" --email "christopher@yorcmo.com"'
+
+# Test invite-sender
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.invite_sender"
 
 # Test acceptance-detector
-oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-automation-test && python3 -m skills.acceptance_detector"
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.acceptance_detector"
 
 # Test message-sender
-oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-automation-test && python3 -m skills.message_sender"
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt "Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.message_sender"
 
 # Check run status
 oz run get <RUN_ID>
@@ -149,16 +166,26 @@ oz run get <RUN_ID>
 
 ### Oz Setup Gotchas
 
+**Secrets & Auth:**
 - `oz secret create` requires `--value-file <path>` not `--value "string"`
+- **Personal API keys** work with personal GitHub accounts. **Team API keys** require a GitHub Organization with the Warp GitHub App installed at the org level.
+- Secrets are team-scoped and shared across ALL environments. Updating `SUPABASE_URL` for one project may break another. Verify before updating.
+- When wiring up the REST API (`/api/v1/agent/run`), test with `curl` first to isolate auth issues from app issues.
+
+**Environment & Code:**
+- Oz pulls from **`main` branch by default**. Feature branch changes won't be picked up until merged.
+- The workspace path is `/workspace/<repo-name>`. If you rename a repo, update: (1) `oz environment update` repo, (2) setup command path, (3) any hardcoded workspace paths in API routes/prompts.
+- Oz agent may auto-fix code issues (e.g., create missing files) instead of just reporting errors. Push your own fixes to `main` before triggering Oz to avoid conflicts.
 - Long `oz` commands in Warp terminal get line-wrapped — newlines become part of the stored string. Run from Claude Code terminal or standard terminal instead.
-- If a setup command gets corrupted, delete and recreate the environment
 - Debian-based image blocks bare `pip install` (PEP 668) — use `--break-system-packages`
-- `python3 -m venv` may fail if `python3-venv` package isn't installed
 
 ### Tested & Working
 
 - [x] batch-sender: imports CSV, creates batch_review, sends HTML email via Outlook
 - [x] invite-sender: runs, checks business hours, exits cleanly outside hours
+- [x] company-scorer v2: enriches + scores companies via Oz, results in `raw_companies`
+- [x] Dashboard → Oz trigger: "Enrich & Score" button triggers Oz via REST API
+- [x] Dashboard auto-poll: counts and table refresh every 5s while pipeline runs
 - [ ] invite-sender: actual invite sending (not tested — needs business hours + approved prospects)
 - [ ] acceptance-detector: not yet tested end-to-end
 - [ ] message-sender: not yet tested end-to-end
