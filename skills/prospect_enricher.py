@@ -93,7 +93,7 @@ def discover_contacts_apollo(apollo: ApolloClient, domain: str) -> list[dict]:
                 "linkedin_url": p.get("linkedin_url", ""),
                 "apollo_id": p.get("id", ""),
                 "email": p.get("email", ""),
-                "source": "apollo",
+                "source": "apollo_search",
             })
         return contacts
     except Exception as e:
@@ -145,7 +145,7 @@ def discover_contacts_zoominfo(company_name: str, location: str) -> list[dict]:
                     "linkedin_url": "",  # ZoomInfo doesn't return LinkedIn URLs
                     "apollo_id": "",
                     "zoominfo_id": str(c.get("id", "")),
-                    "source": "zoominfo",
+                    "source": "import",
                 })
         return contacts
     except Exception as e:
@@ -234,7 +234,7 @@ def discover_contacts_for_company(apollo: ApolloClient, company: dict) -> list[d
             if match:
                 c["apollo_id"] = match.get("apollo_id", "")
                 c["email"] = match.get("email", "")
-            c["source"] = "xray"
+            c["source"] = "import"
             time.sleep(0.3)
         add_contacts(xray_verified, "X-ray")
         print(f"{len(xray_verified)} verified")
@@ -436,7 +436,7 @@ def upsert_prospect(sb, tenant_id: str, campaign_id: str, company: dict, contact
         "company_linkedin_url": company.get("linkedin_url", ""),
         "company_universe_id": company.get("id"),
         "status": "scored",
-        "source": contact.get("source", "apollo"),
+        "source": contact.get("source", "apollo_search"),
         "icp_score": contact.get("icp_score"),
         "activity_score": contact.get("activity_score"),
         "activity_level": contact.get("activity_level"),
