@@ -147,15 +147,18 @@ def linkedin_scrape_batch(sb, companies: list[dict]):
     li_results = run_actor(COMPANY_SCRAPER, {"companies": urls})
     print(f"    Got {len(li_results)} results")
 
-    # Index results by URL
+    # Index results by normalized URL
+    def _normalize_li_url(url: str) -> str:
+        return url.lower().replace("http://", "https://").replace("www.", "").rstrip("/")
+
     li_by_url = {}
     for item in li_results:
         url = item.get("linkedinUrl", item.get("url", ""))
         if url:
-            li_by_url[url.rstrip("/")] = item
+            li_by_url[_normalize_li_url(url)] = item
 
     for c in needs_scrape:
-        li_url = c.get("linkedin_url", "").rstrip("/")
+        li_url = _normalize_li_url(c.get("linkedin_url", ""))
         li = li_by_url.get(li_url)
         if not li:
             continue
