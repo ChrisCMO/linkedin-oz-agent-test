@@ -86,9 +86,10 @@ for r in rows:
             'li_followers': r.get('Company LI Followers', ''),
         }
 
+SKIP = int(os.environ.get('CHECK_SKIP', '0'))
 MAX_COMPANIES = int(os.environ.get('CHECK_LIMIT', '0')) or len(companies)
-companies = dict(list(sorted(companies.items()))[:MAX_COMPANIES])
-print(f"Companies to check: {len(companies)}")
+companies = dict(list(sorted(companies.items()))[SKIP:SKIP + MAX_COMPANIES])
+print(f"Companies to check: {len(companies)} (skip={SKIP})")
 
 # ═══════════════════════════════════════
 # ZoomInfo auth
@@ -111,7 +112,15 @@ except Exception as e:
 # ═══════════════════════════════════════
 FINANCE_TITLES = 'CFO OR Chief Financial Officer OR Controller OR VP Finance OR Director of Finance'
 
+# Load existing results to append
 all_results = []
+if os.path.exists(OUTPUT_CSV):
+    with open(OUTPUT_CSV) as fh:
+        all_results = list(csv.DictReader(fh))
+    existing_companies = set(r['Company'] for r in all_results)
+    print(f"Loaded {len(all_results)} existing results from {len(existing_companies)} companies")
+else:
+    existing_companies = set()
 out_of_credits = False
 
 for i, (co_name, co_info) in enumerate(sorted(companies.items())):
@@ -121,6 +130,11 @@ for i, (co_name, co_info) in enumerate(sorted(companies.items())):
     zipcode = get_zip(co_info['location'])
     print(f"\n[{i+1}/{len(companies)}] {co_name} ({co_info['location']}, zip: {zipcode})")
     print("-" * 60)
+
+    # Skip already-processed companies
+    if co_name in existing_companies:
+        print(f"  Already processed, skipping")
+        continue
 
     found_contacts = []
 
@@ -258,25 +272,31 @@ for i, (co_name, co_info) in enumerate(sorted(companies.items())):
             time.sleep(random.uniform(2, 3))
 
         if not li_url:
-            print(f"    ⚠️  {first} {last} - no LinkedIn URL found, adding as unverified")
-            verified.append({
-                'Company': co_name,
-                'Company Location': co_info['location'],
-                'Company ICP Score': co_info['icp_score'],
-                'Industry': co_info['industry'],
-                'First Name': first,
-                'Last Name': last,
-                'Title (ZoomInfo)': title,
-                'LinkedIn URL': '',
-                'LinkedIn Headline': '',
-                'Current Company (LinkedIn)': '',
-                'Verified at Company': 'No LinkedIn found',
-                'Source': fc['source'],
-                'ZoomInfo Contact ID': fc.get('zi_id', ''),
-                'ZoomInfo Accuracy': fc.get('accuracy', ''),
-                'Apollo Person ID': fc.get('apollo_id', ''),
-                'Email': fc.get('email', ''),
+            # Last resort: broader X-ray with just the name
+            print(f"    X-ray name search for {first} {last}...")
+            items = run_actor(GOOGLE_SERP, {
+                'queries': f'site:linkedin.com/in "{first} {last}"',
+                'maxPagesPerQuery': 1,
+                'resultsPerPage': 5,
+                'countryCode': 'us',
             })
+            if items is None:
+                out_of_credits = True
+                break
+            if items:
+                for item in items:
+                    for result in item.get('organicResults', [item]):
+                        url = result.get('url', result.get('link', ''))
+                        snippet = (result.get('title', '') + ' ' + result.get('description', '')).lower()
+                        co_words = [w for w in co_short.lower().split() if len(w) > 3]
+                        if 'linkedin.com/in/' in url and any(w in snippet for w in co_words):
+                            li_url = normalize_url(url.split('?')[0])
+                            break
+                    if li_url: break
+            time.sleep(random.uniform(2, 3))
+
+        if not li_url:
+            print(f"    ⚠️  {first} {last} - no LinkedIn URL found anywhere, skipping")
             continue
 
         # Scrape profile
@@ -340,11 +360,22 @@ for i, (co_name, co_info) in enumerate(sorted(companies.items())):
         break
 
     # Also verify X-ray-only contacts (not already found via ZoomInfo)
+    finance_snippet_kw = ['cfo', 'chief financial', 'controller', 'vp finance', 'vp of finance',
+                          'vice president of finance', 'vice president, finance', 'director of finance',
+                          'director, finance', 'finance director', 'financial controller',
+                          'treasurer', 'accounting manager', 'finance manager']
     zi_names = set(f"{fc['first'].lower()} {fc['last'].lower()}" for fc in found_contacts)
     for url, info in xray_found.items():
         norm_url = normalize_url(url.split('?')[0])
         # Skip if already verified from ZoomInfo flow
         if any(v.get('LinkedIn URL') == norm_url for v in verified):
+            continue
+
+        # Pre-filter: check snippet for finance keywords BEFORE scraping
+        snippet = (info.get('title', '') + ' ' + info.get('desc', '')).lower()
+        if not any(k in snippet for k in finance_snippet_kw):
+            snippet_title = info.get('title', '')[:50]
+            print(f"    Skipping X-ray (non-finance snippet): {snippet_title}")
             continue
 
         print(f"    Verifying X-ray find: {norm_url[:50]}...")
@@ -364,8 +395,10 @@ for i, (co_name, co_info) in enumerate(sorted(companies.items())):
             continue
 
         # Check if finance title
-        finance_kw = ['cfo', 'chief financial', 'controller', 'vp finance', 'director of finance',
-                      'vp of finance', 'finance director', 'financial controller']
+        finance_kw = ['cfo', 'chief financial', 'controller', 'vp finance', 'vp of finance',
+                      'vice president of finance', 'vice president, finance', 'director of finance',
+                      'director, finance', 'finance director', 'financial controller',
+                      'treasurer', 'accounting manager', 'finance manager']
         is_finance = any(k in headline.lower() for k in finance_kw)
         if not is_finance:
             print(f"    Skipping {first} {last} - not finance title: {headline[:50]}")
