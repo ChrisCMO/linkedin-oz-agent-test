@@ -185,6 +185,47 @@ def linkedin_scrape_batch(sb, companies: list[dict]):
                 updates["domain"] = new_domain
                 updates["website"] = website
 
+        # Extract HQ and branch locations
+        locations = li.get("locations") or []
+        hq_location = None
+        branch_locations = []
+        for loc in locations:
+            loc_str = ", ".join(filter(None, [
+                loc.get("line1", ""),
+                loc.get("city", ""),
+                loc.get("geographicArea", loc.get("state", "")),
+                loc.get("postalCode", ""),
+                loc.get("country", ""),
+            ]))
+            # Apify uses "headquarter" (not "isHQ")
+            if loc.get("headquarter"):
+                hq_location = loc_str
+            else:
+                branch_locations.append(loc_str)
+
+        # Check if the company's listed location is HQ or a branch
+        PNW_CITIES = {
+            "seattle", "bellevue", "tacoma", "redmond", "kirkland", "everett",
+            "renton", "kent", "auburn", "olympia", "lynnwood", "lakewood",
+            "federal way", "vancouver", "portland", "tukwila", "bainbridge island",
+        }
+        current_location = (c.get("location") or "").lower()
+        is_local = any(city in current_location for city in PNW_CITIES)
+
+        hq_city = ""
+        for loc in locations:
+            if loc.get("headquarter"):
+                hq_city = (loc.get("city") or "").lower()
+                break
+
+        hq_is_local = any(city in hq_city for city in PNW_CITIES) if hq_city else False
+        is_branch = is_local and not hq_is_local and hq_location
+
+        if is_branch:
+            # Don't modify location — Seattle branch still counts for geography scoring
+            # Branch info stored in enrichment_data for Chad's review
+            logger.info("  %s: Seattle is a branch — HQ: %s", c.get("name", "?"), hq_location)
+
         # Store full scrape data in enrichment_data
         enrichment_data = c.get("enrichment_data") or {}
         enrichment_data["linkedin_scrape"] = {
@@ -194,6 +235,9 @@ def linkedin_scrape_batch(sb, companies: list[dict]):
             "description": (desc or "")[:200],
             "founded": founded,
             "website": website,
+            "hq_location": hq_location,
+            "branch_locations": branch_locations,
+            "is_branch": is_branch,
             "scraped_at": datetime.now(timezone.utc).isoformat(),
         }
         updates["enrichment_data"] = enrichment_data

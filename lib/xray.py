@@ -3,16 +3,21 @@
 import logging
 import time
 
+import config
 from lib.apify import (
     run_actor, build_company_match_terms,
     SERP_ACTOR, PROFILE_SCRAPER,
 )
+from lib.title_tiers import get_xray_keywords, classify_title_tier, FINANCE_SNIPPET_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
 
 def xray_find_contact_linkedin(contacts: list[dict], company_name: str) -> list[dict]:
     """Find LinkedIn URLs for Apollo contacts that are missing them."""
+    if not config.APIFY_SERP_ENABLED:
+        logger.info("X-ray SERP disabled (APIFY_SERP_ENABLED=false) — skipping LinkedIn URL lookup")
+        return contacts
     needs_lookup = [c for c in contacts if not c.get("linkedin_url")]
     if not needs_lookup:
         return contacts
@@ -51,33 +56,20 @@ def xray_find_contact_linkedin(contacts: list[dict], company_name: str) -> list[
     return contacts
 
 
-def xray_discover_finance_contacts(
-    company_name: str,
-    domain: str | None = None,
-) -> dict:
-    """Tier 2+3: Google X-ray search for finance titles, then profile scrape verification.
-
-    Returns {"contacts": [...], "verified": [...], "rejected": [...]}.
-    """
-    title_keywords = [
-        ("CFO", "CFO"),
-        ('"chief financial officer"', "Chief Financial Officer"),
-        ("controller", "Controller"),
-        ('"director of finance"', "Director of Finance"),
-    ]
-
-    match_terms = build_company_match_terms(company_name)
+def _run_xray_queries(keywords, company_name, domain, match_terms, seen_urls):
+    """Run X-ray SERP queries for a set of title keywords. Returns raw contacts."""
     search_name = match_terms[0] if match_terms else company_name
 
-    # Build queries: domain-first if available
     queries = []
-    for kw, _ in title_keywords:
+    for kw, label, tier in keywords:
         if domain:
             queries.append(f'site:linkedin.com/in "{domain}" {kw}')
         else:
             queries.append(f'site:linkedin.com/in "{search_name}" {kw}')
 
-    logger.info("X-ray Tier 2: searching finance titles (term: %s)", domain or search_name)
+    if not queries:
+        return []
+
     results = run_actor(SERP_ACTOR, {
         "queries": "\n".join(queries),
         "maxPagesPerQuery": 1,
@@ -86,10 +78,9 @@ def xray_discover_finance_contacts(
     })
 
     raw_contacts = []
-    seen_urls = set()
-
     for i, batch in enumerate(results or []):
-        title_label = title_keywords[i][1] if i < len(title_keywords) else "Finance"
+        kw_tier = keywords[i][2] if i < len(keywords) else 0
+        kw_label = keywords[i][1] if i < len(keywords) else "Unknown"
         for item in batch.get("organicResults", []):
             url = item.get("url", "")
             if "linkedin.com/in/" not in url or url in seen_urls:
@@ -98,9 +89,14 @@ def xray_discover_finance_contacts(
             desc = item.get("description", "")
             combined = (title_text + " " + desc).lower()
 
+            # Snippet pre-filter — skip obviously non-matching results
+            if not any(sk in combined for sk in FINANCE_SNIPPET_KEYWORDS):
+                logger.debug("  SKIP (no snippet match): %s", title_text[:60])
+                continue
+
             matched = any(term in combined for term in match_terms)
             if not matched:
-                logger.debug("  SKIP (no match): %s", title_text[:60])
+                logger.debug("  SKIP (no company match): %s", title_text[:60])
                 continue
 
             seen_urls.add(url)
@@ -110,10 +106,58 @@ def xray_discover_finance_contacts(
                 "name": name_part,
                 "first_name": parts[0] if parts else "",
                 "last_name": parts[1] if len(parts) > 1 else "",
-                "title": title_label,
+                "title": kw_label,
                 "linkedin_url": url,
+                "tier": kw_tier,
+                "tier_label": {1: "Primary Finance", 2: "Executive", 3: "Junior Finance"}.get(kw_tier, "Unknown"),
             })
-            logger.info("  MATCH: %s (%s) → %s", name_part, title_label, url)
+            logger.info("  MATCH: %s (%s, T%d) → %s", name_part, kw_label, kw_tier, url)
+
+    return raw_contacts
+
+
+def xray_discover_finance_contacts(
+    company_name: str,
+    domain: str | None = None,
+    max_tier: int = 1,
+) -> dict:
+    """X-ray search for contacts. Tier 1 always runs. Higher tiers only if max_tier allows.
+
+    Args:
+        max_tier: 1 = finance titles only (company_scorer default).
+                  3 = full tiered search: T1 always, T2 if < 2 found, T3 if 0 found
+                      (for prospect_enricher outreach targets).
+
+    Returns {"contacts": [...], "verified": [...], "rejected": [...]}.
+    """
+    if not config.APIFY_SERP_ENABLED:
+        logger.info("X-ray SERP disabled (APIFY_SERP_ENABLED=false) — skipping contact discovery")
+        return {"contacts": [], "verified": [], "rejected": []}
+
+    match_terms = build_company_match_terms(company_name)
+    seen_urls = set()
+
+    # Tier 1 — always run
+    tier1_kw = get_xray_keywords(tier=1)
+    logger.info("X-ray Tier 1: searching finance titles for %s", domain or company_name)
+    raw_contacts = _run_xray_queries(tier1_kw, company_name, domain, match_terms, seen_urls)
+    logger.info("  Tier 1: %d raw contacts", len(raw_contacts))
+
+    # Tier 2 — run if allowed and < 2 Tier 1 contacts found
+    if max_tier >= 2 and len(raw_contacts) < 2:
+        tier2_kw = get_xray_keywords(tier=2)
+        logger.info("X-ray Tier 2: searching executive titles for %s", domain or company_name)
+        tier2_contacts = _run_xray_queries(tier2_kw, company_name, domain, match_terms, seen_urls)
+        raw_contacts.extend(tier2_contacts)
+        logger.info("  Tier 2: %d additional contacts", len(tier2_contacts))
+
+    # Tier 3 — run if allowed and still 0 contacts
+    if max_tier >= 3 and len(raw_contacts) == 0:
+        tier3_kw = get_xray_keywords(tier=3)
+        logger.info("X-ray Tier 3: searching junior finance titles for %s", domain or company_name)
+        tier3_contacts = _run_xray_queries(tier3_kw, company_name, domain, match_terms, seen_urls)
+        raw_contacts.extend(tier3_contacts)
+        logger.info("  Tier 3: %d additional contacts", len(tier3_contacts))
 
     # --- Tier 3: Profile scrape verification ---
     verified = []
@@ -159,12 +203,18 @@ def xray_discover_finance_contacts(
                 rejected.append({**c, "reason": f"wrong company: {actual}"})
                 continue
 
-            # Update title from live profile
+            # Update title from live profile and re-classify tier
             live_title = current_titles[0] if current_titles else profile.get("headline", "")
-            c["title"] = live_title.title() if live_title else c["title"]
+            if live_title:
+                c["title"] = live_title.title()
+                tier, tier_label = classify_title_tier(c["title"])
+                if tier > 0:
+                    c["tier"] = tier
+                    c["tier_label"] = tier_label
             c["connections"] = profile.get("connectionsCount", "")
             verified.append(c)
-            logger.info("  VERIFIED: %s — %s (%s connections)", c["name"], c["title"], c.get("connections", "?"))
+            logger.info("  VERIFIED: %s — %s (T%d, %s connections)",
+                        c["name"], c["title"], c.get("tier", 0), c.get("connections", "?"))
 
     return {
         "contacts": raw_contacts,

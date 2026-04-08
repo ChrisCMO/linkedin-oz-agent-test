@@ -1,6 +1,6 @@
 ---
 name: icp-company-pipeline-revamped
-description: Run the revamped company-first ICP prospect pipeline for VWC CPAs with v2 scoring. This pipeline adds organizational complexity scoring (CFO/Controller detection), revenue mismatch handling, contact activity classification, and client blacklist checks. Use this skill when asked to "run revamped pipeline", "v2 scoring", "rescore companies", "find CFOs at flagged companies", "organizational complexity scoring", or when someone wants the improved pipeline with finance title scanning and activity filtering.
+description: Run the revamped company-first ICP prospect pipeline for VWC CPAs with v2 scoring. This pipeline adds organizational complexity scoring (CFO/Controller detection), revenue mismatch handling, contact activity classification, client blacklist checks, and 3-tier finance contact verification. Use this skill when asked to "run revamped pipeline", "v2 scoring", "rescore companies", "find CFOs at flagged companies", "organizational complexity scoring", or when someone wants the improved pipeline with finance title scanning and activity filtering.
 ---
 
 # ICP Company Pipeline — Revamped (v2 Scoring)
@@ -16,17 +16,48 @@ After the April 4, 2026 client review, Chad and the VWC partners identified gaps
 3. **Inactive contacts are a waste.** Michael Turner (1 connection, no activity) shouldn't be messaged.
 4. **Existing clients must be excluded.** Anthony's Homeport is a VWC client for 401K — can't contact them.
 
+## Pipeline Sequencing — How v2 Fits With Prospect Pipeline
+
+The v2 company pipeline and the `/icp-prospect-pipeline` are **separate but sequenced**:
+
+```
+Phase 1: ALL RAW COMPANIES (cheap, ~$1/company + free searches)
+  ├─ LinkedIn company page scrape + HQ/branch detection
+  ├─ Apollo org enrichment ($1/company)
+  ├─ Finance title scan — Tier 1: Apollo search (free)
+  ├─ Revenue mismatch detection (free)
+  ├─ Client blacklist check (free)
+  ├─ V2 scoring (all 7 dimensions including organizational_complexity)
+  └─ Output: PROCEED (80+) / REVIEW (60-79) / SKIP (<60) / HARD EXCLUDE (0)
+
+Phase 2: REVIEW COMPANIES ONLY — X-RAY RESCUE (cheap, ~$0.04/company)
+  ├─ Finance title scan — Tier 2: Google X-ray search (domain-first, ~$0.04)
+  ├─ Finance title scan — Tier 3: Profile scrape verification (~$0.003/contact)
+  ├─ Rescore with new organizational_complexity data
+  └─ Output: some REVIEW companies cross 80 → become PROCEED
+
+Phase 3: ALL PROCEED COMPANIES → /icp-prospect-pipeline (expensive, ~$2.10/person)
+  ├─ Full contact discovery + enrichment
+  ├─ LinkedIn validation + activity scoring
+  ├─ Contact-level ICP scoring
+  ├─ Connection notes + message sequences
+  └─ Output: dashboard view with contacts table
+```
+
+**Key principle:** Score companies cheaply first, then spend money on contact discovery only where it matters. Finance contacts found during Phase 1-2 become the seed for Phase 3.
+
 ## The 14-Step Pipeline
 
 ```
 Step 1:   COMPANY DISCOVERY              Google Places + LinkedIn X-ray (free/$0.01)
 Step 1b:  CLIENT BLACKLIST CHECK          Exclude known VWC clients  ← NEW
-Step 2:   COMPANY LINKEDIN ENRICHMENT     Apify company page scraper ($0.002/company)
+Step 2:   COMPANY LINKEDIN ENRICHMENT     Apify company page scraper + HQ/branch detection ($0.002/company)
 Step 3:   COMPANY DATA ENRICHMENT         Apollo org enrich ($1/company)
-Step 3b:  FINANCE TITLE SCAN              Apollo search (free) + Google X-ray fallback ($0.01)  ← NEW
+Step 3b:  FINANCE TITLE SCAN             3-tier: Apollo (free) → X-ray ($0.04) → Profile verify ($0.003)  ← UPDATED
 Step 3c:  EXTERNAL DATA OVERLAY           PSBJ list cross-reference for revenue  ← NEW
 Step 3d:  REVENUE MISMATCH DETECTION      Flag suspect revenue vs employee count  ← NEW
 Step 4:   COMPANY-LEVEL ICP SCORING       score_companies_v2() with organizational complexity
+Step 4b:  X-RAY RESCUE FOR REVIEW         Tier 2+3 for REVIEW companies with 0 contacts  ← NEW
 Step 5:   CONTACT DISCOVERY               Apollo + ZoomInfo search (free) for 60+ companies
 Step 5b:  LINKEDIN X-RAY CONTACTS         Google X-ray for companies with 0 contacts
 Step 6:   STALE DATA VALIDATION           Verify ZoomInfo-only contacts via Apify profile scrape
@@ -37,7 +68,7 @@ Step 8b:  ACTIVITY STATUS TAGGING         Tag contacts as ACTIVE/INACTIVE  ← N
 Step 9:   CONTACT-LEVEL SCORING           score_prospects() for outreach prioritization
 Step 10:  CONNECTION NOTES                Adrienne + Melinda versions (under 200 chars)
 Step 11:  MESSAGE SEQUENCES               3-message follow-up per prospect
-Step 12:  OUTPUT                          CSV with v1 vs v2 comparison
+Step 12:  OUTPUT                          CSV matching all_proceed_companies.csv format + v2 columns
 ```
 
 ---
@@ -56,65 +87,127 @@ Run again at Step 5 output to catch contacts whose company matches a blacklisted
 
 ---
 
-## Step 3b: Finance Title Scan
+## Step 2: LinkedIn Enrichment + HQ/Branch Detection
+
+The Apify company page scraper returns a `locations` array with a `headquarter` boolean flag. During Phase 0, the pipeline:
+
+1. Scrapes LinkedIn company page for employees, followers, tagline, description, founded year
+2. Extracts all locations and identifies which is HQ vs branch
+3. If the company's listed PNW location is a **branch** (HQ is elsewhere), stores branch info in `enrichment_data.linkedin_scrape`:
+   - `hq_location`: full HQ address (e.g., "425 Park Ave, Lake Villa, IL, 60046, US")
+   - `branch_locations`: list of non-HQ office addresses
+   - `is_branch`: true if the PNW location is a branch
+
+**Important:** A Seattle branch still counts for geography scoring (full 15/15 points). The branch flag is informational for Chad's review — the company has local presence. The `location` field stays as the PNW address, not modified.
+
+**Example:** ID Label Inc. has HQ in Lake Villa, IL but a Seattle branch at 3250 Airport Way South. It still scores 15/15 on geography because they have a Seattle office. Chad sees "BRANCH — HQ: Lake Villa, IL" in the review dashboard.
+
+---
+
+## Step 3b: Finance Title Scan — 3-Tier Approach
 
 **Goal:** Before scoring, detect if a company has a CFO, Controller, or other finance leadership. This feeds the `organizational_complexity` scoring dimension.
 
-### Tier 1: Free Apollo people search ($0)
+### Title Tiers (from Chad's ICP spec — centralized in `lib/title_tiers.py`)
+
+**Tier 1 — Primary Finance (always search first):**
+CFO, Chief Financial Officer, Controller, Financial Controller, VP Finance, VP of Finance, Vice President of Finance, Director of Finance, Finance Director
+
+**Tier 2 — Executive (secondary, for prospect outreach only — NOT used for company scoring):**
+Owner, President, CEO, Founder, Managing Director, Partner, Executive Director
+
+**Tier 3 — Junior Finance (last resort per Chad — "too junior to initiate an audit relationship"):**
+Accounting Manager, Finance Manager, Treasurer, Bookkeeper, Staff Accountant
+
+**Company scorer searches Tier 1 only** — finding a CFO/Controller is a scoring signal about organizational complexity. Tier 2/3 contacts are discovered later in the prospect enricher for outreach targets.
+
+### Tier 1: Apollo people search ($0 — runs on ALL companies with a domain)
 
 ```python
 from lib.apollo import ApolloClient
 apollo = ApolloClient()
 result = apollo._request("POST", "/api/v1/mixed_people/api_search", json_body={
     "q_organization_domains_list": [company["domain"]],
-    "person_titles": ["CFO", "Chief Financial Officer", "Controller",
-                      "VP Finance", "Director of Finance"],
+    "person_titles": FINANCE_TITLES,  # Tier 1 only: CFO, Controller, VP Finance, Director of Finance
     "per_page": 5,
 })
 ```
 
-Tested on 10 flagged companies: **50% hit rate** (5/10 had finance contacts in Apollo).
+For contacts Apollo returns WITHOUT a LinkedIn URL, run `xray_find_contact_linkedin()` to find their profile via Google X-ray search.
 
-### Tier 2: Google X-ray via Apify (~$0.01/company, only if Tier 1 returns 0)
+### Tier 2: Google X-ray discovery (~$0.04/company — ONLY for REVIEW companies where Tier 1 returned 0)
 
 **Actor:** `nFJndFXA5zjCTuudP` (Google SERP)
 
+**CRITICAL: Domain-first search.** If the company has a domain, search using the domain, NOT the company name. This prevents false positives from ambiguous names (e.g., "SMC" matches SMC Corporation Japan, not Seattle Manufacturing Corporation).
+
 ```python
+# If domain available — use domain
 queries = [
-    f'site:linkedin.com/in "{company_name}" CFO',
-    f'site:linkedin.com/in "{company_name}" "chief financial officer"',
-    f'site:linkedin.com/in "{company_name}" controller',
-    f'site:linkedin.com/in "{company_name}" "director of finance"',
+    f'site:linkedin.com/in "{domain}" CFO',
+    f'site:linkedin.com/in "{domain}" "chief financial officer"',
+    f'site:linkedin.com/in "{domain}" controller',
+    f'site:linkedin.com/in "{domain}" "director of finance"',
 ]
-payload = {
-    "queries": "\n".join(queries),
-    "maxPagesPerQuery": 1,
-    "resultsPerPage": 5,
-    "countryCode": "us",
-}
+
+# If no domain — use the most distinctive part of the company name
+# "SMC - Seattle Manufacturing Corporation" → search "seattle manufacturing corporation"
+# NOT "SMC" (too ambiguous)
 ```
 
-Parse LinkedIn URLs from results. Extract name from title text ("Sue Lewis - Johansen Construction" → first_name: Sue, last_name: Lewis).
+**Company name parsing for search queries:**
+- If name contains " - " separator: use the LONGER part (the full name, not the abbreviation)
+- Strip generic suffixes: Inc, LLC, Corp, Corporation, Company, Co, Ltd, Group, Services, Management
+- Use first 2+ meaningful words as match terms
 
-### Tier 3: Apify profile scrape for verification ($0.002/profile)
-
-**Actor:** `LpVuK3Zozwuipa5bp`
+**Result validation:** Every X-ray result is checked against match terms derived from the company name. Results that don't mention the company are SKIPped.
 
 ```python
-results = run_actor("LpVuK3Zozwuipa5bp", {"urls": [linkedin_url]})
-# Returns: headline, currentPosition (title + company), connectionsCount
+match_terms = _build_company_match_terms(company_name)
+# "SMC - Seattle Manufacturing Corporation"
+#   → ["seattle manufacturing corporation", "seattle manufacturing"]
+# "TASC - Technical & Assembly Services Corporation"
+#   → ["technical & assembly services corporation", "technical assembly"]
 ```
 
-Confirms the contact actually holds the finance title at the target company. Also catches duplicate profiles (Erin Flack at Ballard Industrial had TWO LinkedIn profiles — one with 44 connections, one with 0).
+### Tier 3: Profile scrape verification (~$0.003/contact — for ALL X-ray Tier 2 results)
+
+**Actor:** `LpVuK3Zozwuipa5bp` (LinkedIn Profile Scraper)
+
+Every contact found via X-ray MUST be verified by scraping their live LinkedIn profile:
+
+```python
+profiles = run_actor("LpVuK3Zozwuipa5bp", {"urls": [linkedin_url]})
+# Check: currentPosition[].companyName matches target company
+# Check: title/headline matches a finance role
+# If wrong company → REJECTED
+# If verified → update title from live data, record connections count
+```
+
+**Why verification is required:** X-ray search is fuzzy. Testing showed false positives when:
+- Company name contains a common abbreviation (SMC, JJR, CJ)
+- Company name is a common word ("Launch", "Pacific", "Field")
+- Multiple companies share similar names ("Skills Inc." vs "SkillNet Solutions")
+
+Without Tier 3, SMC returned "Kathy Nix (CFO)" and "Jason Nordwall (CFO)" — neither works at Seattle Manufacturing Corporation.
+
+### Tier 2+3 timing: AFTER initial scoring
+
+X-ray + profile verification only runs for companies that:
+1. Scored as REVIEW (60-79) in the initial v2 scoring
+2. Had 0 finance contacts from Tier 1 (Apollo)
+
+This saves ~$0.04/company on PROCEED companies (already scored high enough) and SKIP companies (not worth the cost).
+
+If X-ray finds verified contacts → rescore the company with the new `organizational_complexity` data. Some REVIEW companies will cross 80 → become PROCEED.
 
 ### Output columns:
-- `finance_contact_first_name`
-- `finance_contact_last_name`
-- `finance_contact_title` — exact title (CFO, Controller, etc.)
-- `finance_contact_linkedin_url` — full LinkedIn profile URL
-- `has_cfo` — boolean
-- `has_controller` — boolean
-- `finance_titles_found` — comma-separated list of all finance titles
+- `Contacts Found` — number of verified finance contacts
+- `Has CFO` — Yes/No
+- `Has Controller` — Yes/No
+- `Finance Contact 1-5 Name` — full name
+- `Finance Contact 1-5 Title` — live title from LinkedIn profile (if verified)
+- `Finance Contact 1-5 LinkedIn URL` — full LinkedIn profile URL
 
 ---
 
@@ -143,6 +236,32 @@ Pure pre-processing, no API cost.
 
 ---
 
+## Domain Filtering — Junk Domain Protection
+
+**CRITICAL:** Google Maps/Places sometimes returns social media pages or marketplace links as a company's "website". These must be filtered out before using the domain for Apollo enrichment or X-ray search.
+
+**Blocked domains:**
+```python
+JUNK_DOMAINS = {
+    "facebook.com", "fb.com", "instagram.com", "twitter.com", "x.com",
+    "youtube.com", "tiktok.com", "pinterest.com", "snapchat.com",
+    "amazon.com", "lazada.com", "shopee.com", "ebay.com", "etsy.com",
+    "alibaba.com", "aliexpress.com",
+    "yelp.com", "yellowpages.com", "bbb.org", "mapquest.com",
+    "google.com", "goo.gl", "bit.ly", "linktr.ee",
+    "wix.com", "squarespace.com", "godaddy.com", "wordpress.com",
+}
+```
+
+LinkedIn URLs (`linkedin.com/company/...`) are NOT affected — those are stored in the `linkedin_url` field, not the `domain` field.
+
+If a company's only "website" is a junk domain, `extract_domain()` returns `None`, which means:
+- Apollo org enrichment is skipped (no domain to search)
+- X-ray Tier 2 falls back to company name search
+- The company still gets scored, just with less data
+
+---
+
 ## Step 4: Company-Level ICP Scoring (v2)
 
 **Function:** `score_companies_v2()` in `mvp/backend/services/scoring.py`
@@ -164,6 +283,26 @@ A company at score 77 with a CFO: gains ~6-7 net points (gains 9-10 on complexit
 
 ### Hard exclusions (unchanged):
 Revenue > $150M, public, government, PE-backed, banking, >10K employees.
+
+---
+
+## Step 4b: X-Ray Rescue for REVIEW Companies
+
+After initial v2 scoring, companies that scored REVIEW (60-79) with 0 finance contacts enter the X-ray rescue flow:
+
+1. Run Tier 2 X-ray search (domain-first, with company name match validation)
+2. Run Tier 3 profile scrape verification on any X-ray results
+3. If verified contacts found → rescore with new organizational_complexity data
+4. Companies that cross 80 → PROCEED
+
+**Validated test result (April 7, 2026):**
+- SMC (Seattle Manufacturing Corporation): scored 79 REVIEW with 0 contacts
+- X-ray searched `"smcgear.com"` (domain-first) → 0 results (correct — no false positives)
+- Previous run without domain-first search returned 2 fake CFOs from unrelated "SMC" companies
+
+**Validated test result (April 7, 2026):**
+- TASC (Technical & Assembly Services Corporation): Apollo found Controller (Rikki Nelson) → scored 86 PROCEED
+- No X-ray needed — Apollo Tier 1 was sufficient
 
 ---
 
@@ -199,21 +338,44 @@ Contacts tagged INACTIVE are excluded from the outreach queue. The pipeline look
 
 ---
 
+## Output Format
+
+The output CSV matches `all_proceed_companies.csv` format (columns 1-22) plus v2 additions (columns 23-41):
+
+```
+Category, Company, Company ICP Score, Pipeline Action, Industry,
+Employees (LinkedIn), Employees (Apollo), Revenue, Location, Ownership,
+Company LinkedIn URL, LI Followers, LI Description, LI Tagline, LI Founded, LI Has Logo,
+Domain, Website, Contacts Found, Score Breakdown, Reasoning, Why This Score,
+Has CFO, Has Controller, Revenue Suspect, Organizational Complexity,
+Finance Contact 1 Name, Finance Contact 1 Title, Finance Contact 1 LinkedIn URL,
+Finance Contact 2 Name, Finance Contact 2 Title, Finance Contact 2 LinkedIn URL,
+Finance Contact 3 Name, Finance Contact 3 Title, Finance Contact 3 LinkedIn URL,
+Finance Contact 4 Name, Finance Contact 4 Title, Finance Contact 4 LinkedIn URL,
+Finance Contact 5 Name, Finance Contact 5 Title, Finance Contact 5 LinkedIn URL
+```
+
+---
+
 ## Cost Summary
 
 | Step | API | Cost | When |
 |------|-----|------|------|
 | 1b | None | $0 | All companies |
-| 3b Tier 1 | Apollo search | $0 | All companies with domain |
-| 3b Tier 2 | Apify SERP | ~$0.01/company | Only if Tier 1 = 0 results |
-| 3b Tier 3 | Apify profile | ~$0.002/profile | Only to verify X-ray results |
+| 2 | Apify company scraper | ~$0.002/company | All companies with LinkedIn URL |
+| 3 | Apollo org enrich | $1/company | All companies with domain |
+| 3b Tier 1 | Apollo people search | $0 | All companies with domain |
+| 3b Tier 2 | Apify SERP (X-ray) | ~$0.04/company | REVIEW companies with 0 Tier 1 contacts |
+| 3b Tier 3 | Apify profile scraper | ~$0.003/contact | X-ray Tier 2 results only |
 | 3c | None | $0 | All companies |
 | 3d | None | $0 | All companies |
 | 4 | OpenAI GPT-5.4 | ~$0.01/company | All companies |
+| 4b | (included in 3b Tier 2+3) | — | REVIEW companies only |
 | 6b | None | $0 | All contacts |
 | 8b | None | $0 | All contacts |
 
-**Total new cost per company:** ~$0.01-$0.02 (mostly OpenAI scoring + occasional X-ray)
+**Total cost per company (full pipeline):** ~$1.05 (Apollo org enrich + scoring + LinkedIn scrape)
+**Additional cost for REVIEW X-ray rescue:** ~$0.04/company + $0.003/verified contact
 
 ---
 
@@ -221,17 +383,40 @@ Contacts tagged INACTIVE are excluded from the outreach queue. The pipeline look
 
 | File | What |
 |------|------|
+| `lib/title_tiers.py` | Centralized 3-tier title config — single source of truth for all title lists |
+| `lib/apify.py` | Apify actor runner with retry logic, adaptive timeouts, timing logs |
+| `lib/xray.py` | X-ray discovery with `max_tier` param (1=finance only, 3=all tiers) |
+| `skills/company_scorer.py` | Company scoring pipeline — Tier 1 finance scan + branch detection |
+| `skills/prospect_enricher.py` | Prospect enrichment — full tiered search (max_tier=3) for outreach targets |
 | `mvp/backend/services/scoring.py` | `score_companies_v2()`, `classify_contact_activity()`, `detect_revenue_mismatch()` |
+| `scripts/benchmark_scorer.py` | Benchmark utility — import CSV, run scorer, report timing |
 | `data/blacklist.csv` | Client exclusion list |
-| `scripts/test_revamped_scoring.py` | Test script for v2 scoring on flagged companies |
-| `docs/deliverables/week2/scored/new/v2_scoring_comparison.csv` | Output: v1 vs v2 comparison |
 | `docs/deliverables/week2/universe/private/psbj_family_owned_wa_2026_86.csv` | PSBJ family-owned companies list |
+
+## Running the Pipeline
+
+```bash
+# Run on a CSV of raw companies
+.venv/bin/python3 -m scripts.test_full_v2_pipeline --file /path/to/input.csv --output /path/to/output.csv
+
+# Input CSV must have at minimum: company_name, linkedin_url
+# Optional input columns: industry, city, state, domain, website, source
+# Handles multiple CSV formats (ZoomInfo export, X-ray batch, manual list)
+```
 
 ---
 
-## Validated Test Results (April 5, 2026)
+## Validated Test Results (April 7, 2026)
 
-Finance title scan tested on 10 flagged companies:
+### X-ray batch (3 Seattle manufacturing companies):
+
+| Company | Initial Score | Tier 1 (Apollo) | Tier 2 (X-ray) | Tier 3 (Verify) | Final Score | Action |
+|---------|--------------|-----------------|-----------------|-----------------|-------------|--------|
+| SMC - Seattle Manufacturing Corp | 79 REVIEW | 0 contacts | 0 results (domain search correct) | — | 79 | REVIEW |
+| Weyerhaeuser | 0 HARD EXCLUDE | 5 contacts (CFO + 4 Directors) | — | — | 0 | HARD EXCLUDE |
+| TASC - Technical & Assembly | 86 PROCEED | 1 contact (Rikki Nelson, Controller) | — | — | 86 | PROCEED |
+
+### Finance title scan (10 flagged companies, April 5):
 
 | Company | Score | Apollo Found | Title | LinkedIn Verified |
 |---------|-------|-------------|-------|-------------------|
@@ -245,3 +430,12 @@ Finance title scan tested on 10 flagged companies:
 | Fairbank Construction | 79 | — | (none in Apollo) | Needs X-ray |
 | Jumbo Foods | 79 | — | (none in Apollo) | Needs X-ray |
 | Pacific Tool | 79 | — | (none in Apollo) | Needs X-ray |
+
+### Known X-ray accuracy issues (fixed April 7):
+
+| Issue | Example | Fix |
+|-------|---------|-----|
+| Ambiguous abbreviations | "SMC" matched SMC Corporation (Japan) | Domain-first search: use `"smcgear.com"` not `"SMC"` |
+| Short company names | "Field" matched Field Aerospace | `_build_company_match_terms()` extracts distinctive words |
+| Junk domains from Google Maps | Company "website" was facebook.com or instagram.com | `JUNK_DOMAINS` filter in `extract_domain()` |
+| False positive contacts | X-ray returned CFOs at wrong companies | Tier 3 profile scrape verifies `currentPosition.companyName` |

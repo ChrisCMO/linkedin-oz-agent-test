@@ -160,16 +160,20 @@ apollo._request("POST", "/api/v1/mixed_people/api_search", json_body={
 
 **When to run:** After Step 3, for **any company with no CFO/Controller/Director of Finance** — regardless of how many other contacts Apollo or ZoomInfo returned. A company with 5 VPs of Engineering but no CFO still needs this step.
 
-**Finance title keywords (canonical list — use everywhere):**
-```python
-FINANCE_TITLES = [
-    'cfo', 'chief financial officer', 'chief financial',
-    'controller', 'financial controller', 'comptroller',
-    'vp finance', 'vp of finance', 'vice president of finance', 'vice president, finance',
-    'director of finance', 'director, finance', 'finance director',
-    'treasurer', 'accounting manager', 'finance manager',
-]
-```
+**Title tiers (from Chad's ICP spec — centralized in `lib/title_tiers.py`):**
+
+Tier 1 — Primary Finance (always target first):
+- CFO, Chief Financial Officer, Controller, Financial Controller
+- VP Finance, VP of Finance, Vice President of Finance
+- Director of Finance, Finance Director
+
+Tier 2 — Executive (secondary option):
+- Owner, President, CEO, Founder, Managing Director, Partner, Executive Director
+
+Tier 3 — Junior Finance (last resort per Chad — "too junior to initiate an audit relationship"):
+- Accounting Manager, Finance Manager, Treasurer, Bookkeeper, Staff Accountant
+
+**Search strategy:** Apollo and ZoomInfo search ALL tiers in a single call. X-ray runs Tier 1 first, adds Tier 2 if < 2 contacts found, adds Tier 3 if still 0. Each contact is tagged with `tier` and `tier_label` for review.
 
 **Validated approach (tested March 2026):** ZoomInfo with zip code found verified finance contacts at 13 out of 54 companies tested (24% company hit rate, 17 contacts total). All contacts verified via LinkedIn profile scrape.
 

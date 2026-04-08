@@ -230,7 +230,7 @@ def discover_contacts_for_company(apollo: ApolloClient, company: dict) -> list[d
     )
     if not has_finance:
         print(f"    Tier 3 (X-ray)...", end=" ", flush=True)
-        xray_result = xray_discover_finance_contacts(name, domain=domain or None)
+        xray_result = xray_discover_finance_contacts(name, domain=domain or None, max_tier=3)
         xray_verified = xray_result.get("verified", [])
         # Cross-match verified contacts against Apollo
         for c in xray_verified:

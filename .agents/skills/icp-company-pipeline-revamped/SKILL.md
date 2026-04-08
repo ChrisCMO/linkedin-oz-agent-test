@@ -22,7 +22,7 @@ The v2 company pipeline and the `/icp-prospect-pipeline` are **separate but sequ
 
 ```
 Phase 1: ALL RAW COMPANIES (cheap, ~$1/company + free searches)
-  ├─ LinkedIn company page scrape
+  ├─ LinkedIn company page scrape + HQ/branch detection
   ├─ Apollo org enrichment ($1/company)
   ├─ Finance title scan — Tier 1: Apollo search (free)
   ├─ Revenue mismatch detection (free)
@@ -51,7 +51,7 @@ Phase 3: ALL PROCEED COMPANIES → /icp-prospect-pipeline (expensive, ~$2.10/per
 ```
 Step 1:   COMPANY DISCOVERY              Google Places + LinkedIn X-ray (free/$0.01)
 Step 1b:  CLIENT BLACKLIST CHECK          Exclude known VWC clients  ← NEW
-Step 2:   COMPANY LINKEDIN ENRICHMENT     Apify company page scraper ($0.002/company)
+Step 2:   COMPANY LINKEDIN ENRICHMENT     Apify company page scraper + HQ/branch detection ($0.002/company)
 Step 3:   COMPANY DATA ENRICHMENT         Apollo org enrich ($1/company)
 Step 3b:  FINANCE TITLE SCAN             3-tier: Apollo (free) → X-ray ($0.04) → Profile verify ($0.003)  ← UPDATED
 Step 3c:  EXTERNAL DATA OVERLAY           PSBJ list cross-reference for revenue  ← NEW
@@ -87,9 +87,39 @@ Run again at Step 5 output to catch contacts whose company matches a blacklisted
 
 ---
 
+## Step 2: LinkedIn Enrichment + HQ/Branch Detection
+
+The Apify company page scraper returns a `locations` array with a `headquarter` boolean flag. During Phase 0, the pipeline:
+
+1. Scrapes LinkedIn company page for employees, followers, tagline, description, founded year
+2. Extracts all locations and identifies which is HQ vs branch
+3. If the company's listed PNW location is a **branch** (HQ is elsewhere), stores branch info in `enrichment_data.linkedin_scrape`:
+   - `hq_location`: full HQ address (e.g., "425 Park Ave, Lake Villa, IL, 60046, US")
+   - `branch_locations`: list of non-HQ office addresses
+   - `is_branch`: true if the PNW location is a branch
+
+**Important:** A Seattle branch still counts for geography scoring (full 15/15 points). The branch flag is informational for Chad's review — the company has local presence. The `location` field stays as the PNW address, not modified.
+
+**Example:** ID Label Inc. has HQ in Lake Villa, IL but a Seattle branch at 3250 Airport Way South. It still scores 15/15 on geography because they have a Seattle office. Chad sees "BRANCH — HQ: Lake Villa, IL" in the review dashboard.
+
+---
+
 ## Step 3b: Finance Title Scan — 3-Tier Approach
 
 **Goal:** Before scoring, detect if a company has a CFO, Controller, or other finance leadership. This feeds the `organizational_complexity` scoring dimension.
+
+### Title Tiers (from Chad's ICP spec — centralized in `lib/title_tiers.py`)
+
+**Tier 1 — Primary Finance (always search first):**
+CFO, Chief Financial Officer, Controller, Financial Controller, VP Finance, VP of Finance, Vice President of Finance, Director of Finance, Finance Director
+
+**Tier 2 — Executive (secondary, for prospect outreach only — NOT used for company scoring):**
+Owner, President, CEO, Founder, Managing Director, Partner, Executive Director
+
+**Tier 3 — Junior Finance (last resort per Chad — "too junior to initiate an audit relationship"):**
+Accounting Manager, Finance Manager, Treasurer, Bookkeeper, Staff Accountant
+
+**Company scorer searches Tier 1 only** — finding a CFO/Controller is a scoring signal about organizational complexity. Tier 2/3 contacts are discovered later in the prospect enricher for outreach targets.
 
 ### Tier 1: Apollo people search ($0 — runs on ALL companies with a domain)
 
@@ -98,8 +128,7 @@ from lib.apollo import ApolloClient
 apollo = ApolloClient()
 result = apollo._request("POST", "/api/v1/mixed_people/api_search", json_body={
     "q_organization_domains_list": [company["domain"]],
-    "person_titles": ["CFO", "Chief Financial Officer", "Controller",
-                      "VP Finance", "Director of Finance"],
+    "person_titles": FINANCE_TITLES,  # Tier 1 only: CFO, Controller, VP Finance, Director of Finance
     "per_page": 5,
 })
 ```
@@ -354,8 +383,13 @@ Finance Contact 5 Name, Finance Contact 5 Title, Finance Contact 5 LinkedIn URL
 
 | File | What |
 |------|------|
-| `scripts/test_full_v2_pipeline.py` | Full v2 pipeline: LinkedIn scrape → Apollo enrich → 3-tier finance scan → v2 score → CSV output |
+| `lib/title_tiers.py` | Centralized 3-tier title config — single source of truth for all title lists |
+| `lib/apify.py` | Apify actor runner with retry logic, adaptive timeouts, timing logs |
+| `lib/xray.py` | X-ray discovery with `max_tier` param (1=finance only, 3=all tiers) |
+| `skills/company_scorer.py` | Company scoring pipeline — Tier 1 finance scan + branch detection |
+| `skills/prospect_enricher.py` | Prospect enrichment — full tiered search (max_tier=3) for outreach targets |
 | `mvp/backend/services/scoring.py` | `score_companies_v2()`, `classify_contact_activity()`, `detect_revenue_mismatch()` |
+| `scripts/benchmark_scorer.py` | Benchmark utility — import CSV, run scorer, report timing |
 | `data/blacklist.csv` | Client exclusion list |
 | `docs/deliverables/week2/universe/private/psbj_family_owned_wa_2026_86.csv` | PSBJ family-owned companies list |
 
