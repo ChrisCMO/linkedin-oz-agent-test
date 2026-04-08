@@ -819,7 +819,8 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
     return scored_count, error_count, skipped_count
 
 
-def run(tenant_id: str, batch_id: str | None = None, limit: int = 100):
+def run(tenant_id: str, batch_id: str | None = None, limit: int = 100,
+        company_ids: list[str] | None = None):
     """Main entry point."""
     sb = get_supabase()
 
@@ -827,9 +828,19 @@ def run(tenant_id: str, batch_id: str | None = None, limit: int = 100):
     if not icp_config:
         logger.warning("No ICP config for tenant %s — using VWC defaults", tenant_id)
 
-    companies = get_raw_companies(sb, tenant_id, batch_id, limit)
+    if company_ids:
+        # Fetch specific companies by ID (for re-scoring)
+        companies = []
+        for cid in company_ids:
+            result = sb.table(TABLE).select("*").eq("id", cid).single().execute()
+            if result.data:
+                companies.append(result.data)
+        print(f"Re-scoring {len(companies)} specific companies...")
+    else:
+        companies = get_raw_companies(sb, tenant_id, batch_id, limit)
+
     if not companies:
-        print("No raw companies to process")
+        print("No companies to process")
         return
 
     print(f"Processing {len(companies)} companies (v2 pipeline)...")
@@ -850,10 +861,14 @@ def main():
                         help="Batch UUID (optional, processes all raw if omitted)")
     parser.add_argument("--limit", type=int, default=100,
                         help="Max companies to process")
+    parser.add_argument("--company-ids", default=None,
+                        help="Comma-separated company UUIDs (re-score specific companies)")
     args = parser.parse_args()
 
+    company_ids = args.company_ids.split(",") if args.company_ids else None
+
     try:
-        run(args.tenant_id, args.batch_id, args.limit)
+        run(args.tenant_id, args.batch_id, args.limit, company_ids)
     except Exception as e:
         logger.error("company_scorer failed: %s", e, exc_info=True)
         print(f"Error: {e}")
