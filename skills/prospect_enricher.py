@@ -223,8 +223,12 @@ def discover_contacts_for_company(apollo: ApolloClient, company: dict) -> list[d
         print(f"{len(zi_contacts)} found")
         time.sleep(0.5)
 
-    # Tier 3: X-ray (only if still 0 contacts)
-    if not all_contacts:
+    # Tier 3: X-ray (if no finance contacts found from Tier 1+2)
+    has_finance = any(
+        any(ft.lower() in c.get("title", "").lower() for ft in FINANCE_TITLES)
+        for c in all_contacts
+    )
+    if not has_finance:
         print(f"    Tier 3 (X-ray)...", end=" ", flush=True)
         xray_result = xray_discover_finance_contacts(name, domain=domain or None)
         xray_verified = xray_result.get("verified", [])
