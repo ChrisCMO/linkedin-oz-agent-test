@@ -203,19 +203,39 @@ Only contacts that pass step 5 (all three: company match + PNW location + financ
 - ZoomInfo and Apollo found contacts but **none with finance titles** (e.g., 5 VPs of Engineering but no CFO)
 - Step 3b found ZoomInfo finance contacts but none could be verified on LinkedIn
 
+**Tiered fallback:** When called from `prospect_enricher.py` with `max_tier=3`, X-ray searches all three tiers progressively. When called from `company_scorer.py` (default `max_tier=1`), only Tier 1 finance titles are searched.
+
 **Method:** Google X-ray search via Apify Google SERP actor (`nFJndFXA5zjCTuudP`). Searches Google for `site:linkedin.com/in "company name" <title keyword>` — returns LinkedIn profile URLs from Google's index. No LinkedIn account needed, zero ban risk.
 
 **Apify Actor:** `nFJndFXA5zjCTuudP` (Google Search Results Scraper)
 
-**Search queries per company (run all 4):**
+**Tiered search queries (defined in `lib/title_tiers.py`, executed by `lib/xray.py`):**
+
+Tier 1 — always run (~5 SERP queries):
 ```python
-queries = [
-    f'site:linkedin.com/in "{company_name}" CFO',
-    f'site:linkedin.com/in "{company_name}" "chief financial"',
-    f'site:linkedin.com/in "{company_name}" controller',
-    f'site:linkedin.com/in "{company_name}" finance',
-]
+# Finance titles — the primary search
+'site:linkedin.com/in "{company}" CFO'
+'site:linkedin.com/in "{company}" "chief financial officer"'
+'site:linkedin.com/in "{company}" controller'
+'site:linkedin.com/in "{company}" "director of finance"'
+'site:linkedin.com/in "{company}" "vp finance" OR "vp of finance"'
 ```
+
+Tier 2 — run if < 2 Tier 1 contacts found (~2 SERP queries):
+```python
+# Executive titles — secondary option when no finance leadership exists
+'site:linkedin.com/in "{company}" owner OR president OR CEO'
+'site:linkedin.com/in "{company}" "managing director" OR "executive director"'
+```
+
+Tier 3 — run if still 0 contacts (~2 SERP queries):
+```python
+# Junior finance — last resort per Chad's spec
+'site:linkedin.com/in "{company}" "accounting manager"'
+'site:linkedin.com/in "{company}" "finance manager" OR treasurer'
+```
+
+Each contact found is tagged with `tier` (1, 2, or 3) and `tier_label` for Chad's review.
 
 **Example:**
 ```python
