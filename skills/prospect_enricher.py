@@ -201,7 +201,6 @@ def discover_contacts_for_company(apollo: ApolloClient, company: dict) -> list[d
     apollo_contacts = discover_contacts_apollo(apollo, domain)
     add_contacts(apollo_contacts, "Apollo")
     print(f"{len(apollo_contacts)} found")
-    time.sleep(0.5)
 
     # Tier 2: ZoomInfo (only for finance titles not found in Apollo)
     apollo_has_finance = any(
@@ -218,10 +217,8 @@ def discover_contacts_for_company(apollo: ApolloClient, company: dict) -> list[d
                 c["apollo_id"] = match.get("apollo_id", "")
                 c["linkedin_url"] = match.get("linkedin_url", "")
                 c["email"] = match.get("email", "") or c.get("email", "")
-            time.sleep(0.3)
         add_contacts(zi_contacts, "ZoomInfo")
         print(f"{len(zi_contacts)} found")
-        time.sleep(0.5)
 
     # Tier 3: X-ray (if no finance contacts found from Tier 1+2)
     has_finance = any(
@@ -239,7 +236,6 @@ def discover_contacts_for_company(apollo: ApolloClient, company: dict) -> list[d
                 c["apollo_id"] = match.get("apollo_id", "")
                 c["email"] = match.get("email", "")
             c["source"] = "import"
-            time.sleep(0.3)
         add_contacts(xray_verified, "X-ray")
         print(f"{len(xray_verified)} verified")
 
@@ -292,69 +288,118 @@ def enrich_person(apollo: ApolloClient, contact: dict) -> dict:
 # Phase 3: LinkedIn Validation
 # ---------------------------------------------------------------------------
 
-def validate_linkedin(contact: dict) -> dict:
-    """Profile scrape + Activity Index for a single contact."""
-    linkedin_url = contact.get("linkedin_url", "")
-    if not linkedin_url:
+def _apply_profile_data(contact: dict, profile: dict):
+    """Apply Apify profile scrape data to a contact dict."""
+    contact["headline"] = profile.get("headline") or contact.get("headline", "")
+    contact["linkedin_connections"] = profile.get("connectionsCount", 0)
+    contact["linkedin_followers"] = profile.get("followerCount", 0)
+    contact["open_to_work"] = profile.get("openToWork", False)
+
+    current_positions = profile.get("currentPosition") or []
+    if current_positions:
+        current_title = current_positions[0].get("title", "")
+        contact["role_verified"] = True
+        if current_title:
+            contact["title"] = current_title
+    else:
         contact["role_verified"] = False
-        contact["activity_level"] = "Unknown"
+
+
+def _apply_activity_data(contact: dict, activity_data: dict):
+    """Apply Activity Index data to a contact dict."""
+    a = activity_data[0] if isinstance(activity_data, list) else activity_data
+    contact["activity_score"] = a.get("activity_score", 0)
+    contact["activity_level"] = a.get("recommendation", "Unknown")
+    contact["activity_recommendation"] = a.get("recommendation", "")
+
+    metrics = a.get("activity_metrics", {})
+    contact["posts_last_30_days"] = metrics.get("posts_last_30_days", 0)
+    contact["reactions_last_30_days"] = metrics.get("reactions_last_30_days", 0)
+    contact["last_activity_date"] = metrics.get("last_activity_date", "")
+    contact["days_since_last_activity"] = metrics.get("days_since_last_activity")
+
+    contact["linkedin_active_status"] = classify_contact_activity(contact)
+
+    score = contact.get("activity_score", 0)
+    if score >= 7:
+        contact["activity_level"] = "Very Active"
+    elif score >= 5:
+        contact["activity_level"] = "Active"
+    elif score >= 3:
+        contact["activity_level"] = "Moderate"
+    elif score >= 1:
+        contact["activity_level"] = "Low"
+    else:
+        contact["activity_level"] = "Inactive"
+
+
+def validate_linkedin_batch(contacts: list[dict]) -> list[dict]:
+    """Batch profile scrape + parallel Activity Index for all contacts at once.
+
+    Much faster than per-contact: 1 profile scraper run + N parallel activity checks
+    instead of 2N sequential actor runs.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Separate contacts with/without LinkedIn URLs
+    has_url = [c for c in contacts if c.get("linkedin_url")]
+    no_url = [c for c in contacts if not c.get("linkedin_url")]
+    for c in no_url:
+        c["role_verified"] = False
+        c["activity_level"] = "Unknown"
+
+    if not has_url:
+        return contacts
+
+    # Normalize URLs
+    for c in has_url:
+        url = c["linkedin_url"]
+        if not url.startswith("https://"):
+            c["linkedin_url"] = url.replace("http://", "https://")
+
+    # --- Batch profile scrape (1 actor run for all contacts) ---
+    urls = [c["linkedin_url"] for c in has_url]
+    print(f"    Batch profile scrape ({len(urls)} profiles)...", end=" ", flush=True)
+    profiles = run_actor(PROFILE_SCRAPER, {"urls": urls})
+    print(f"{len(profiles)} results")
+
+    # Index profiles by URL
+    profile_by_url = {}
+    for p in profiles:
+        p_url = p.get("url", p.get("linkedinUrl", ""))
+        if p_url:
+            profile_by_url[p_url.rstrip("/")] = p
+
+    for c in has_url:
+        li = c["linkedin_url"].rstrip("/")
+        profile = profile_by_url.get(li, {})
+        if profile:
+            _apply_profile_data(c, profile)
+        else:
+            c["role_verified"] = False
+
+    # --- Parallel Activity Index (all contacts at once via ThreadPool) ---
+    print(f"    Activity Index ({len(has_url)} contacts in parallel)...", end=" ", flush=True)
+
+    def fetch_activity(contact):
+        url = contact["linkedin_url"]
+        try:
+            result = run_actor(ACTIVITY_INDEX_ACTOR, {"linkedinUrl": url})
+            if result:
+                _apply_activity_data(contact, result)
+        except Exception as e:
+            logger.warning("Activity Index failed for %s: %s", contact.get("name", "?"), e)
         return contact
 
-    # Normalize URL
-    if not linkedin_url.startswith("https://"):
-        linkedin_url = linkedin_url.replace("http://", "https://")
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(fetch_activity, c): c for c in has_url}
+        done = 0
+        for future in as_completed(futures):
+            done += 1
+            future.result()  # propagate exceptions
+        print(f"{done} done")
 
-    # Profile scrape for role verification
-    profiles = run_actor(PROFILE_SCRAPER, {"urls": [linkedin_url]})
-    if profiles:
-        p = profiles[0]
-        contact["headline"] = p.get("headline") or contact.get("headline", "")
-        contact["linkedin_connections"] = p.get("connectionsCount", 0)
-        contact["linkedin_followers"] = p.get("followerCount", 0)
-        contact["open_to_work"] = p.get("openToWork", False)
-
-        # Role verification
-        current_positions = p.get("currentPosition") or []
-        if current_positions:
-            current_title = current_positions[0].get("title", "")
-            current_company = current_positions[0].get("companyName", "")
-            contact["role_verified"] = True
-            if current_title:
-                contact["title"] = current_title
-        else:
-            contact["role_verified"] = False
-
-    # Activity Index
-    activity = run_actor(ACTIVITY_INDEX_ACTOR, {"linkedinUrl": linkedin_url})
-    if activity:
-        a = activity[0] if isinstance(activity, list) else activity
-        contact["activity_score"] = a.get("activity_score", 0)
-        contact["activity_level"] = a.get("recommendation", "Unknown")
-        contact["activity_recommendation"] = a.get("recommendation", "")
-
-        metrics = a.get("activity_metrics", {})
-        contact["posts_last_30_days"] = metrics.get("posts_last_30_days", 0)
-        contact["reactions_last_30_days"] = metrics.get("reactions_last_30_days", 0)
-        contact["last_activity_date"] = metrics.get("last_activity_date", "")
-        contact["days_since_last_activity"] = metrics.get("days_since_last_activity")
-
-        # Classify
-        contact["linkedin_active_status"] = classify_contact_activity(contact)
-
-        # Map activity_score to level labels
-        score = contact.get("activity_score", 0)
-        if score >= 7:
-            contact["activity_level"] = "Very Active"
-        elif score >= 5:
-            contact["activity_level"] = "Active"
-        elif score >= 3:
-            contact["activity_level"] = "Moderate"
-        elif score >= 1:
-            contact["activity_level"] = "Low"
-        else:
-            contact["activity_level"] = "Inactive"
-
-    return contact
+    return contacts
 
 
 # ---------------------------------------------------------------------------
@@ -466,23 +511,26 @@ def process_company(sb, apollo: ApolloClient, tenant_id: str, campaign_id: str,
         return 0
     print(f"  → {len(contacts)} contacts discovered")
 
-    # Phase 2: Person Enrichment
-    print(f"  Phase 2: Person Enrichment ({len(contacts)} contacts)")
-    for i, c in enumerate(contacts):
-        if c.get("apollo_id"):
-            print(f"    [{i+1}/{len(contacts)}] Enriching {c.get('name', '?')}...", end=" ", flush=True)
-            enrich_person(apollo, c)
-            print("done" if c.get("enriched") else "no data")
-            time.sleep(1)
+    # Phase 2: Person Enrichment (parallel with ThreadPool)
+    enrichable = [c for c in contacts if c.get("apollo_id")]
+    print(f"  Phase 2: Person Enrichment ({len(enrichable)} contacts with Apollo IDs)")
+    if enrichable:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Phase 3: LinkedIn Validation
+        def enrich_one(c):
+            enrich_person(apollo, c)
+            return c
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(enrich_one, c): c for c in enrichable}
+            for future in as_completed(futures):
+                c = future.result()
+                status = "enriched" if c.get("enriched") else "no data"
+                print(f"    {c.get('name', '?')}: {status}")
+
+    # Phase 3: LinkedIn Validation (batched profile scrape + parallel activity)
     print(f"  Phase 3: LinkedIn Validation")
-    for i, c in enumerate(contacts):
-        if c.get("linkedin_url"):
-            print(f"    [{i+1}/{len(contacts)}] Validating {c.get('name', '?')}...", end=" ", flush=True)
-            validate_linkedin(c)
-            print(f"{c.get('activity_level', '?')} ({c.get('linkedin_connections', '?')} connections)")
-            time.sleep(1)
+    validate_linkedin_batch(contacts)
 
     # Phase 4 & 5: Score + Generate Messages
     print(f"  Phase 4-5: Scoring + Message Generation")
