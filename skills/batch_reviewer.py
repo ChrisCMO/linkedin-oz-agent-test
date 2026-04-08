@@ -197,7 +197,8 @@ Prospects to review:
 # Main reviewer
 # ---------------------------------------------------------------------------
 
-def review_batch(tenant_id: str, month: str, dry_run: bool = False):
+def review_batch(tenant_id: str, month: str, dry_run: bool = False,
+                  send_email: str | None = None):
     """Run all checks on a monthly batch of prospects."""
     sb = get_supabase()
 
@@ -226,6 +227,17 @@ def review_batch(tenant_id: str, month: str, dry_run: bool = False):
     print(f"  Blacklist: {len(blacklist['names'])} companies")
     print(f"  Competitors: {len(competitors['names'])} firms")
 
+    # --- Cross-batch dedup: check previously contacted prospects ---
+    previous = sb.table("prospects").select("linkedin_slug, company_name").eq(
+        "tenant_id", tenant_id
+    ).in_("status", ["approved", "invite_sent", "connected", "msg1_sent", "msg2_sent", "msg3_sent", "completed"]).lt(
+        "created_at", start
+    ).execute().data or []
+
+    prev_slugs = {(p.get("linkedin_slug") or "").lower() for p in previous if p.get("linkedin_slug")}
+    prev_companies = {(p.get("company_name") or "").lower() for p in previous if p.get("company_name")}
+    print(f"  Previously contacted: {len(prev_slugs)} people, {len(prev_companies)} companies")
+
     # Track results
     auto_approved = []
     auto_skipped = []  # (prospect, reason)
@@ -234,7 +246,7 @@ def review_batch(tenant_id: str, month: str, dry_run: bool = False):
 
     # --- Rule-based checks ---
 
-    # 1. Duplicates (batch check)
+    # 1. Duplicates (within-batch)
     dup_skips = check_duplicates(prospects)
 
     for p in prospects:
@@ -249,10 +261,17 @@ def review_batch(tenant_id: str, month: str, dry_run: bool = False):
             skip_reasons["previously_skipped"] += 1
             continue
 
-        # Duplicate check
+        # Within-batch duplicate
         if pid in dup_skips:
             auto_skipped.append((p, dup_skips[pid]))
             skip_reasons["duplicate"] += 1
+            continue
+
+        # Cross-batch duplicate (same person already contacted)
+        slug = (p.get("linkedin_slug") or "").lower()
+        if slug and slug in prev_slugs:
+            auto_skipped.append((p, "Already contacted in a previous batch"))
+            skip_reasons["cross_batch_duplicate"] += 1
             continue
 
         # Blacklist check (VWC clients)
@@ -283,11 +302,13 @@ def review_batch(tenant_id: str, month: str, dry_run: bool = False):
             skip_reasons["inactive"] += 1
             continue
 
-        # Role not verified
+        # Role not verified — flag only, don't auto-skip
+        # Headlines may differ from titles; needs manual review
         reason = check_role_verified(p)
         if reason:
-            auto_skipped.append((p, reason))
-            skip_reasons["unverified_role"] += 1
+            # Still approve but tag the reason for visibility
+            p["_flag"] = reason
+            auto_approved.append(p)
             continue
 
         # Title tier check
@@ -367,10 +388,147 @@ def review_batch(tenant_id: str, month: str, dry_run: bool = False):
             continue  # already skipped
         sb.table("prospects").update({
             "status": "skipped",
+            "icp_reasoning": f"AI Review: {reason}",
             "updated_at": now,
         }).eq("id", p["id"]).execute()
 
     print(f"  Done: {len(all_approved)} approved, {len(all_skipped)} skipped")
+
+    # --- Send email to approver ---
+    if send_email:
+        print(f"\n  Sending review email to {send_email}...")
+        _send_review_email(
+            to=send_email,
+            month=month,
+            tenant_id=tenant_id,
+            total=len(prospects),
+            approved_count=len(all_approved),
+            skipped_count=len(all_skipped),
+            skip_reasons=dict(skip_reasons),
+            top_companies=_get_top_companies(all_approved),
+        )
+        print(f"  Email sent to {send_email}")
+
+
+def _get_top_companies(approved_prospects: list[dict], limit: int = 10) -> list[dict]:
+    """Get top companies by ICP score from approved prospects."""
+    company_map = defaultdict(lambda: {"contacts": 0, "score": 0})
+    for p in approved_prospects:
+        company = p.get("company_name", "Unknown")
+        company_map[company]["contacts"] += 1
+        company_map[company]["score"] = max(company_map[company]["score"], p.get("icp_score", 0))
+        company_map[company]["name"] = company
+        company_map[company]["category"] = p.get("category", "")
+
+    sorted_companies = sorted(company_map.values(), key=lambda c: -c["score"])
+    return sorted_companies[:limit]
+
+
+def _send_review_email(
+    to: str,
+    month: str,
+    tenant_id: str,
+    total: int,
+    approved_count: int,
+    skipped_count: int,
+    skip_reasons: dict,
+    top_companies: list[dict],
+):
+    """Send the batch review summary email via Outlook."""
+    from lib.outlook import OutlookClient
+
+    date = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+    dashboard_url = f"https://localhost:3000/clients/{tenant_id}/review-batches"
+
+    # Build issues summary HTML
+    issues_html = ""
+    if skip_reasons:
+        issues_rows = ""
+        for reason, count in sorted(skip_reasons.items(), key=lambda x: -x[1]):
+            label = reason.replace("_", " ").title()
+            issues_rows += f'<tr><td style="padding:4px 12px 4px 0;font-size:13px;color:#64748b">{label}</td><td style="padding:4px 0;font-size:13px;font-weight:600;color:#ef4444">{count}</td></tr>'
+        issues_html = f"""
+        <div style="margin:20px 0">
+          <p style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin:0 0 8px;font-weight:600">Issues Found & Removed</p>
+          <table>{issues_rows}</table>
+        </div>"""
+
+    # Build top companies HTML
+    companies_html = ""
+    if top_companies:
+        rows = ""
+        for c in top_companies:
+            score_color = "#16a34a" if c["score"] >= 80 else "#ca8a04"
+            rows += f"""
+            <tr>
+              <td style="padding:6px 12px 6px 0;font-size:13px;font-weight:500">{c['name']}</td>
+              <td style="padding:6px 8px;font-size:12px;color:#64748b">{c.get('category', '')}</td>
+              <td style="padding:6px 8px;text-align:center"><span style="background:{score_color};color:#fff;padding:1px 8px;border-radius:4px;font-size:11px;font-weight:700">{c['score']}</span></td>
+              <td style="padding:6px 0;text-align:right;font-size:12px;color:#64748b">{c['contacts']} contacts</td>
+            </tr>"""
+        companies_html = f"""
+        <div style="margin:20px 0">
+          <p style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin:0 0 8px;font-weight:600">Top Companies</p>
+          <table style="width:100%">{rows}</table>
+        </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f8fafc">
+  <div style="max-width:640px;margin:0 auto;background:#fff">
+
+    <div style="background:linear-gradient(135deg,#0f172a,#1e293b);color:#fff;padding:28px 32px">
+      <p style="margin:0;font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:rgba(255,255,255,.4);font-weight:500">VWC CPAs</p>
+      <h1 style="margin:8px 0 0;font-size:22px;font-weight:700;letter-spacing:-.3px">Prospect Batch — {date}</h1>
+      <p style="margin:6px 0 0;font-size:14px;color:rgba(255,255,255,.55)">AI review complete. {approved_count} prospects ready for your review.</p>
+    </div>
+
+    <div style="padding:24px 32px">
+
+      <div style="display:flex;gap:1px;background:#e2e8f0;border-radius:12px;overflow:hidden;margin-bottom:20px">
+        <div style="flex:1;background:#fff;padding:18px;text-align:center">
+          <div style="font-size:28px;font-weight:700;color:#0f172a">{total}</div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;margin-top:4px;font-weight:500">Total</div>
+        </div>
+        <div style="flex:1;background:#fff;padding:18px;text-align:center">
+          <div style="font-size:28px;font-weight:700;color:#16a34a">{approved_count}</div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;margin-top:4px;font-weight:500">Approved</div>
+        </div>
+        <div style="flex:1;background:#fff;padding:18px;text-align:center">
+          <div style="font-size:28px;font-weight:700;color:#ef4444">{skipped_count}</div>
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;margin-top:4px;font-weight:500">Removed</div>
+        </div>
+      </div>
+
+      {issues_html}
+      {companies_html}
+
+      <div style="text-align:center;padding:24px 0">
+        <a href="{dashboard_url}" style="display:inline-block;background:#16a34a;color:#fff;padding:14px 40px;border-radius:10px;text-decoration:none;font-size:15px;font-weight:600;letter-spacing:.3px">
+          Review &amp; Approve Batch
+        </a>
+        <p style="margin:12px 0 0;font-size:12px;color:#94a3b8">
+          Nothing sends until you approve. 5 connection requests per day once approved.
+        </p>
+      </div>
+
+    </div>
+
+    <div style="padding:16px 32px;background:#f8fafc;border-top:1px solid #e2e8f0">
+      <p style="margin:0;font-size:11px;color:#94a3b8">VWC LinkedIn Outreach System — yorCMO</p>
+    </div>
+
+  </div>
+</body>
+</html>"""
+
+    client = OutlookClient()
+    client.send_email(
+        to=to,
+        subject=f"VWC Prospect Batch — {date} ({approved_count} prospects ready for review)",
+        html_body=html,
+    )
 
 
 def main():
@@ -379,10 +537,11 @@ def main():
     parser.add_argument("--tenant-id", required=True, help="Tenant UUID")
     parser.add_argument("--month", required=True, help="Month to review (YYYY-MM)")
     parser.add_argument("--dry-run", action="store_true", help="Preview only, don't update DB")
+    parser.add_argument("--send-email", default=None, help="Send review email to this address after review")
     args = parser.parse_args()
 
     try:
-        review_batch(args.tenant_id, args.month, args.dry_run)
+        review_batch(args.tenant_id, args.month, args.dry_run, args.send_email)
     except Exception as e:
         logger.error("batch_reviewer failed: %s", e, exc_info=True)
         print(f"Error: {e}")
