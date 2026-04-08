@@ -392,7 +392,7 @@ def get_raw_companies(sb, tenant_id: str, batch_id: str | None = None,
         sb.table(TABLE)
         .select("*")
         .eq("tenant_id", tenant_id)
-        .in_("pipeline_status", ["raw", "error"])
+        .in_("pipeline_status", ["raw", "error", "enriched"])
     )
     if batch_id:
         query = query.eq("batch_id", batch_id)
