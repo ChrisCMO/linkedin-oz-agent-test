@@ -28,7 +28,7 @@ APOLLO_API_KEY = os.environ.get("APOLLO_API_KEY", "")
 
 # Apify
 APIFY_API_KEY = os.environ.get("APIFY_API_KEY", "")
-APIFY_SERP_ENABLED = os.environ.get("APIFY_SERP_ENABLED", "false").lower() == "true"
+APIFY_SERP_ENABLED = os.environ.get("APIFY_SERP_ENABLED", "true").lower() == "true"
 
 # OpenAI
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
