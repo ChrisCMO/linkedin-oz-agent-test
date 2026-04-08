@@ -17,8 +17,8 @@ The previous approach searched databases for *people* by title, which returned n
 Step 1:  COMPANY DISCOVERY         → Google Places API (free)
 Step 2:  COMPANY ENRICHMENT        → Apollo org enrich by domain ($1/company) + ZoomInfo contact search (free)
 Step 3:  CONTACT DISCOVERY         → Apollo people search by domain (free) + ZoomInfo cross-match (free)
-Step 3b: ZOOMINFO FINANCE CROSSREF → ZoomInfo zip code search for CFO/Controller at companies with only exec titles
-Step 3c: LINKEDIN X-RAY DISCOVERY  → Google X-ray search via Apify for companies with 0 contacts (~$0.01/search)
+Step 3b: ZOOMINFO FINANCE CROSSREF → ZoomInfo zip code search for CFO/Controller at ANY company with no finance contacts
+Step 3c: LINKEDIN X-RAY DISCOVERY  → Google X-ray search for CFO/Controller at companies still missing finance contacts (~$0.01/search)
 Step 4:  PERSON ENRICHMENT         → Apollo person enrich ($1/person) → LinkedIn URL, email, revenue, employees
 Step 4b: STALE DATA VALIDATION     → Google X-ray + Apify profile scrape to verify ZoomInfo-only contacts still at company
 Step 5:  AI SCORING                → 0-100 score with company-location-aware reasoning (GPT-5.4)
@@ -154,22 +154,34 @@ apollo._request("POST", "/api/v1/mixed_people/api_search", json_body={
 
 ---
 
-## Step 3b: ZoomInfo Finance Cross-Reference (for companies with only executive contacts)
+## Step 3b: ZoomInfo Finance Cross-Reference (for companies with no finance contacts)
 
-**Goal:** Find CFOs, Controllers, and Directors of Finance at companies where Apollo only returned Presidents/Owners/CEOs. Uses ZoomInfo's zip code filtering for location-validated results.
+**Goal:** Find CFOs, Controllers, and Directors of Finance at companies where no finance contacts were found. Uses ZoomInfo's zip code filtering for location-validated results.
 
-**When to run:** After Step 3, for companies where Apollo returned contacts but none with finance titles.
+**When to run:** After Step 3, for **any company with no CFO/Controller/Director of Finance** — regardless of how many other contacts Apollo or ZoomInfo returned. A company with 5 VPs of Engineering but no CFO still needs this step.
+
+**Finance title keywords (canonical list — use everywhere):**
+```python
+FINANCE_TITLES = [
+    'cfo', 'chief financial officer', 'chief financial',
+    'controller', 'financial controller', 'comptroller',
+    'vp finance', 'vp of finance', 'vice president of finance', 'vice president, finance',
+    'director of finance', 'director, finance', 'finance director',
+    'treasurer', 'accounting manager', 'finance manager',
+]
+```
 
 **Validated approach (tested March 2026):** ZoomInfo with zip code found verified finance contacts at 13 out of 54 companies tested (24% company hit rate, 17 contacts total). All contacts verified via LinkedIn profile scrape.
 
-**5-step verification per contact:**
+**6-step verification per contact:**
 1. **ZoomInfo contact search** with `companyName` + `zipCode` + `zipCodeRadiusMiles: 50` → name, title, ZI Contact ID
 2. **Apollo cross-match** → search `q_keywords: "First Last CompanyName"` → Apollo ID, LinkedIn URL, email
-3. **Google X-ray fallback** (if Apollo has no LinkedIn URL) → `site:linkedin.com/in "First Last" "company"`
-4. **Apify profile scraper** → verify current company + PNW location match
-5. **Activity Index** → LinkedIn engagement score (1-10)
+3. **Google X-ray fallback** (if Apollo has no LinkedIn URL) → `site:linkedin.com/in "First Last" "company"`, then broader `site:linkedin.com/in "First Last"` with company name in snippet
+4. **Skip if no LinkedIn URL** — if steps 2-3 cannot find a LinkedIn profile, skip this contact. Cannot do LinkedIn outreach without a URL.
+5. **Apify profile scraper** → verify current company (strict match) + PNW location + finance title
+6. **Activity Index** → LinkedIn engagement score (1-10)
 
-Only contacts that pass step 4 (company + location verified) get added.
+Only contacts that pass step 5 (all three: company match + PNW location + finance title) get added.
 
 **Store IDs:** `ZoomInfo Contact ID` and `Apollo Person ID` on every verified contact.
 
@@ -177,13 +189,15 @@ Only contacts that pass step 4 (company + location verified) get added.
 
 ---
 
-## Step 3c: LinkedIn X-Ray Discovery (Fallback for Zero-Contact Companies)
+## Step 3c: LinkedIn X-Ray Discovery (for companies with no verified finance contacts)
 
-**Goal:** Find finance contacts directly from LinkedIn when both ZoomInfo and Apollo return 0 results for a company. Also useful for enriching ZoomInfo-only contacts that Apollo can't cross-match.
+**Goal:** Find finance contacts directly from LinkedIn via Google X-ray search. This is the last-resort discovery step and catches contacts invisible to both ZoomInfo and Apollo.
 
-**When to run:** After Steps 2-3b, for any company where:
+**When to run:** After Steps 2-3b, for **any company that still has no verified CFO/Controller/Director of Finance** — including:
 - ZoomInfo found 0 contacts AND Apollo found 0 contacts (e.g., Carillon Properties — private family CRE with no database presence)
 - ZoomInfo found contacts but Apollo couldn't cross-match them (need LinkedIn URLs)
+- ZoomInfo and Apollo found contacts but **none with finance titles** (e.g., 5 VPs of Engineering but no CFO)
+- Step 3b found ZoomInfo finance contacts but none could be verified on LinkedIn
 
 **Method:** Google X-ray search via Apify Google SERP actor (`nFJndFXA5zjCTuudP`). Searches Google for `site:linkedin.com/in "company name" <title keyword>` — returns LinkedIn profile URLs from Google's index. No LinkedIn account needed, zero ban risk.
 
@@ -218,11 +232,24 @@ for item in items:
             description = result.get("description", "")
 ```
 
-**After finding URLs:** Run Apify Profile Scraper (`LpVuK3Zozwuipa5bp`) to verify the person is currently at the company and get their live headline/title.
+**Snippet pre-filter (CRITICAL — saves ~80% of Apify costs):** Before scraping any X-ray result profile, check the Google snippet (title + description) for finance keywords. Skip results where the snippet clearly shows a non-finance role (e.g., "Project Manager", "Software Engineer"). Only scrape profiles where the snippet contains a finance keyword from `FINANCE_TITLES`.
+
+```python
+finance_snippet_kw = ['cfo', 'chief financial', 'controller', 'vp finance', 'vp of finance',
+                      'vice president of finance', 'vice president, finance', 'director of finance',
+                      'director, finance', 'finance director', 'financial controller',
+                      'treasurer', 'accounting manager', 'finance manager']
+snippet = (result.get('title', '') + ' ' + result.get('description', '')).lower()
+if not any(k in snippet for k in finance_snippet_kw):
+    continue  # Skip — not a finance contact
+```
+
+**After pre-filter passes:** Run Apify Profile Scraper (`LpVuK3Zozwuipa5bp`) to verify the person is currently at the company and get their live headline/title.
 
 **Matching logic:** When matching search results to a company:
 - Result title or description must contain the company name (or first word of it)
 - Filter out results from different companies with similar names (e.g., "Skills Inc." vs "LifeSkills, Inc." vs "SkillNet Solutions")
+- **IMPORTANT:** Generic company names like "Mountain Construction", "Northwest Construction", "TASC" will match many unrelated companies. For these, require 2+ significant words to match, not just 1.
 
 **Real-world results from model client pipeline:**
 - **Carillon Properties:** ZoomInfo 0, Apollo 0 → X-ray found Alina Wilson (Controller) and Beth Peterson (Senior Property Manager). Went from zero to 2 confirmed contacts.
@@ -253,19 +280,42 @@ queries = [
 # Step 2: If found, scrape live profile
 profile = run_actor("LpVuK3Zozwuipa5bp", {"urls": [linkedin_url]})
 
-# Step 3: Verify company match
-current_company = profile.get("currentPosition", [{}])[0].get("companyName", "")
-headline = profile.get("headline", "")
-company_match = target_company.lower()[:6] in (current_company + headline).lower()
+# Step 3: STRICT company match — all significant words must match
+def strict_company_match(target, linkedin_company, headline):
+    target_words = [w for w in target.lower().split() if len(w) > 3
+                    and w not in ('inc.', 'inc', 'llc', 'corp', 'corp.', 'the', 'and')]
+    li_combined = (linkedin_company + ' ' + headline).lower()
+    matched = [w for w in target_words if w in li_combined]
+    if len(target_words) == 1:
+        return len(matched) >= 1
+    return len(matched) >= 2  # Need 2+ significant words
+
+# Step 4: PNW location gate
+PNW_KEYWORDS = ['washington', 'oregon', 'wa', 'or', 'seattle', 'bellevue', 'tacoma',
+                'redmond', 'kirkland', 'everett', 'renton', 'kent', 'auburn', 'olympia',
+                'lynnwood', 'lakewood', 'federal way', 'vancouver', 'portland', 'salem',
+                'eugene', 'bend', 'spokane', 'greater seattle']
+location = str(profile.get("location", "")).lower()
+in_pnw = any(k in location for k in PNW_KEYWORDS)
 ```
 
-**Validation outcomes:**
-| Outcome | Action |
-|---------|--------|
-| Company match = YES, title match = YES | Keep in pipeline, mark as verified |
-| Company match = YES, title mismatch | Keep but flag — update title to LinkedIn headline |
-| Company match = NO | **Remove from pipeline** — person left the company. Set ICP score to 0. |
-| Not found on LinkedIn | Keep with caveat — no LinkedIn URL available for outreach |
+**Validation outcomes (all three must pass):**
+| Check | Pass | Fail |
+|-------|------|------|
+| Company match (strict) | Keep | **Remove** — wrong company or same name in different state |
+| PNW location | Keep | **Remove** — same-named company elsewhere (e.g., Merit Construction in Tennessee) |
+| Finance title in headline | Keep | Flag for review — at company but title unclear |
+| Not found on LinkedIn | — | **Skip entirely** — cannot do LinkedIn outreach without a URL |
+
+**IMPORTANT: Do NOT keep contacts with no LinkedIn URL.** The previous approach ("keep with caveat") leads to dead-end prospects that can never be contacted via LinkedIn.
+
+**Real-world false positives caught by strict validation (April 2026):**
+| Name | Target Company | Actually At | Location | Why Caught |
+|------|---------------|-------------|----------|------------|
+| Lynn Cooper | Merit Construction (Lakewood, WA) | Merit Construction, Inc. (Knoxville, TN) | Tennessee | PNW location gate |
+| Michael Dahl | Northwest Construction (Bellevue, WA) | Northwest Construction (Tucson, AZ) | Arizona | PNW location gate |
+| Suanne Dedmon | Mountain Construction (Tacoma, WA) | Rocky Mountain Construction Group | Colorado | Strict company match (2+ words) |
+| Phyllis A. S. | AvtechTyee (Everett, WA) | AvtechTyee | Albuquerque, NM | PNW location gate |
 
 **Name matching tips:**
 - Last name is the primary match key (more unique than first name)
