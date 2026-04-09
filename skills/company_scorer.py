@@ -345,6 +345,12 @@ def apollo_finance_scan(apollo: ApolloClient, domain: str) -> list[dict]:
                 "title": p.get("title", ""),
                 "linkedin_url": p.get("linkedin_url", ""),
                 "company": p.get("organization", {}).get("name", ""),
+                "apollo_id": p.get("id", ""),
+                "email": p.get("email", ""),
+                "seniority": p.get("seniority", ""),
+                "headline": p.get("headline", ""),
+                "city": p.get("city", ""),
+                "state": p.get("state", ""),
             })
         return contacts
     except Exception as e:
@@ -645,6 +651,20 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
             continue
 
         try:
+            # --- Pre-filter: skip unenrichable companies to save Apollo credits ---
+            li_url = company.get("linkedin_url", "")
+            if not domain and not li_url:
+                print("NO DOMAIN/LINKEDIN — skipping (unenrichable)")
+                sb.table(TABLE).update({
+                    "pipeline_status": "scored",
+                    "pipeline_action": "SKIP",
+                    "icp_score": 0,
+                    "reasoning": "No domain or LinkedIn URL — cannot enrich",
+                    "scored_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", company_id).execute()
+                skipped_count += 1
+                continue
+
             # --- Step 2: Apollo org enrichment ---
             if company.get("pipeline_status") in ("raw", "error"):
                 sb.table(TABLE).update({
@@ -690,6 +710,12 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
             }).eq("id", company_id).execute()
             error_count += 1
             print(f"ERROR: {e}")
+
+        # Progress summary every 25 companies
+        if (i + 1) % 25 == 0:
+            print(f"\n  --- Progress [{i+1}/{len(companies)}] "
+                  f"{scored_count} scored, {error_count} errors, {skipped_count} skipped, "
+                  f"{len(scoring_queue)} queued for scoring ---\n")
 
         # Small delay between API calls
         if i < len(companies) - 1:
@@ -773,14 +799,38 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
             print(f"{len(scores)} scores returned")
 
         except Exception as e:
-            logger.error("Batch scoring failed: %s", e)
-            for company, _ in batch:
-                sb.table(TABLE).update({
-                    "pipeline_status": "error",
-                    "scoring_error": f"Batch scoring failed: {str(e)[:400]}",
-                }).eq("id", company["id"]).execute()
-                error_count += 1
-            print(f"ERROR: {e}")
+            logger.error("Batch scoring failed: %s — retrying individually", e)
+            print(f"BATCH ERROR: {e} — retrying individually...")
+
+            for company, scoring_input in batch:
+                try:
+                    individual_scores = score_companies_v2([scoring_input])
+                    if individual_scores:
+                        result = individual_scores[0]
+                        score = result.get("score", 0)
+                        action = "PROCEED" if score >= 80 else "REVIEW" if score >= 60 else "HARD EXCLUDE" if score == 0 else "SKIP"
+                        breakdown = result.get("breakdown", {})
+                        sb.table(TABLE).update({
+                            "icp_score": score,
+                            "pipeline_action": action,
+                            "score_breakdown": " | ".join(f"{k}: {v}" for k, v in breakdown.items()),
+                            "reasoning": result.get("reasoning", ""),
+                            "why_this_score": result.get("calibration_notes", ""),
+                            "pipeline_status": "scored",
+                            "scored_at": datetime.now(timezone.utc).isoformat(),
+                            "scoring_error": None,
+                        }).eq("id", company["id"]).execute()
+                        scored_count += 1
+                        print(f"    {company.get('name', '?')}: {score} ({action})")
+                    else:
+                        raise ValueError("No score returned")
+                except Exception as e2:
+                    sb.table(TABLE).update({
+                        "pipeline_status": "error",
+                        "scoring_error": f"Individual scoring failed: {str(e2)[:400]}",
+                    }).eq("id", company["id"]).execute()
+                    error_count += 1
+                    print(f"    {company.get('name', '?')}: ERROR — {e2}")
 
         time.sleep(1)
 
@@ -907,10 +957,35 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
     return scored_count, error_count, skipped_count
 
 
+def reset_stale_statuses(sb, tenant_id: str):
+    """Reset companies stuck in transitional statuses back to retryable state.
+
+    Companies in 'enriching' or 'scoring' for >30 min are likely from a crashed run.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+
+    for stale_status, reset_to in [("enriching", "raw"), ("scoring", "enriched")]:
+        result = (
+            sb.table(TABLE)
+            .update({"pipeline_status": reset_to})
+            .eq("tenant_id", tenant_id)
+            .eq("pipeline_status", stale_status)
+            .lt("updated_at", cutoff)
+            .execute()
+        )
+        count = len(result.data) if result.data else 0
+        if count:
+            print(f"  Reset {count} stale '{stale_status}' → '{reset_to}'")
+
+
 def run(tenant_id: str, batch_id: str | None = None, limit: int = 100,
         company_ids: list[str] | None = None):
     """Main entry point."""
     sb = get_supabase()
+
+    # Reset any companies stuck from a previous crashed run
+    reset_stale_statuses(sb, tenant_id)
 
     icp_config = load_icp_config(sb, tenant_id)
     if not icp_config:
@@ -961,6 +1036,15 @@ def main():
         logger.error("company_scorer failed: %s", e, exc_info=True)
         print(f"Error: {e}")
         sys.exit(1)
+
+    # Auto-backup after scoring run
+    try:
+        export_script = os.path.join(BASE_DIR, "scripts", "export_pipeline_data.py")
+        if os.path.exists(export_script):
+            print("\nRunning auto-backup...")
+            os.system(f'"{sys.executable}" "{export_script}" --tenant-id {args.tenant_id}')
+    except Exception as e:
+        logger.warning("Auto-backup failed (non-fatal): %s", e)
 
 
 if __name__ == "__main__":
