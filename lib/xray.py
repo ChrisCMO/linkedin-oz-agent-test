@@ -1,6 +1,11 @@
-"""X-ray discovery — Google SERP search + LinkedIn profile verification for finance contacts."""
+"""X-ray discovery — Google SERP search + LinkedIn profile verification for finance contacts.
+
+SERP provider: Serper.dev (primary, fast) with Apify SERP actor as fallback.
+Toggle via SERP_PROVIDER env var: "serper" (default) or "apify".
+"""
 
 import logging
+import os
 import time
 
 import config
@@ -8,7 +13,11 @@ from lib.apify import (
     run_actor, build_company_match_terms,
     SERP_ACTOR, PROFILE_SCRAPER,
 )
+from lib.serper import serper_search_batch
 from lib.title_tiers import get_xray_keywords, classify_title_tier, FINANCE_SNIPPET_KEYWORDS
+
+# "serper" (default, fast) or "apify" (legacy, slower)
+SERP_PROVIDER = os.environ.get("SERP_PROVIDER", "serper").lower()
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +36,16 @@ def xray_find_contact_linkedin(contacts: list[dict], company_name: str) -> list[
         name = c.get("first_name", c.get("name", ""))
         queries.append(f'site:linkedin.com/in "{name}" "{company_name}"')
 
-    logger.info("X-ray: searching %d contacts via SERP...", len(queries))
-    results = run_actor(SERP_ACTOR, {
-        "queries": "\n".join(queries),
-        "maxPagesPerQuery": 1,
-        "resultsPerPage": 3,
-        "countryCode": "us",
-    })
+    logger.info("X-ray: searching %d contacts via SERP (%s)...", len(queries), SERP_PROVIDER)
+    if SERP_PROVIDER == "serper":
+        results = serper_search_batch(queries, num=3)
+    else:
+        results = run_actor(SERP_ACTOR, {
+            "queries": "\n".join(queries),
+            "maxPagesPerQuery": 1,
+            "resultsPerPage": 3,
+            "countryCode": "us",
+        })
 
     for i, c in enumerate(needs_lookup):
         if i >= len(results):
@@ -70,12 +82,16 @@ def _run_xray_queries(keywords, company_name, domain, match_terms, seen_urls):
     if not queries:
         return []
 
-    results = run_actor(SERP_ACTOR, {
-        "queries": "\n".join(queries),
-        "maxPagesPerQuery": 1,
-        "resultsPerPage": 5,
-        "countryCode": "us",
-    })
+    if SERP_PROVIDER == "serper":
+        results = serper_search_batch(queries, num=5)
+        logger.info("  [Serper] %d queries", len(queries))
+    else:
+        results = run_actor(SERP_ACTOR, {
+            "queries": "\n".join(queries),
+            "maxPagesPerQuery": 1,
+            "resultsPerPage": 5,
+            "countryCode": "us",
+        })
 
     raw_contacts = []
     for i, batch in enumerate(results or []):
