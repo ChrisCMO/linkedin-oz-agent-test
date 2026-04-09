@@ -293,6 +293,7 @@ Scoring dimensions and weights (v2 — calibrated against VWC benchmark clients)
   * CFO or Controller found: 9-10 (strong signal of financial complexity)
   * Both CFO AND Controller: 10 (maximum — robust finance function)
   * VP Finance or Director of Finance: 7-8
+  * Accounting Manager or Finance Manager found: 6-7 (dedicated accounting staff — company has financial complexity but not C-level finance leadership yet)
   * Only CEO/President/Owner found (no dedicated finance titles) at a NON-private/family company: 3-4 (may be too small/simple)
   * Only CEO/President/Owner found BUT company is private/family-owned/founder-led: 7-8 (Carillon Properties pattern — the owner IS the financial decision-maker at family businesses. They may have an internal Accounting Manager or bookkeeper not visible on LinkedIn. Benefit of the doubt.)
   * No contacts found at all: 5 (benefit of doubt — many private companies have unlisted staff)
@@ -404,6 +405,7 @@ def score_companies_v2(companies: list[dict], icp_config: dict | None = None, mo
             "finance_titles": c.get("finance_titles", ""),
             "has_cfo": c.get("has_cfo", False),
             "has_controller": c.get("has_controller", False),
+            "has_accounting_manager": c.get("has_accounting_manager", False),
             "finance_contact_name": c.get("finance_contact_name", ""),
             "finance_contact_linkedin": c.get("finance_contact_linkedin", ""),
             "big_firm_auditor": c.get("big_firm_auditor", ""),

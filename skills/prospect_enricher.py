@@ -39,10 +39,12 @@ logger = logging.getLogger(__name__)
 
 ACTIVITY_INDEX_ACTOR = "kog75ERz9lcVNujbQ"
 
-# Titles to search for (primary finance + secondary executive)
-FINANCE_TITLES = ["CFO", "Chief Financial Officer", "Controller", "VP Finance", "Director of Finance"]
-EXEC_TITLES = ["President", "Owner", "CEO", "Founder", "Managing Director", "Partner"]
-ALL_TARGET_TITLES = FINANCE_TITLES + EXEC_TITLES
+# Titles to search for — centralized in lib/title_tiers.py
+from lib.title_tiers import TIER_1_TITLES, TIER_2_TITLES, TIER_3_TITLES
+FINANCE_TITLES = TIER_1_TITLES
+EXEC_TITLES = TIER_2_TITLES
+JUNIOR_FINANCE_TITLES = TIER_3_TITLES
+ALL_TARGET_TITLES = FINANCE_TITLES + EXEC_TITLES + JUNIOR_FINANCE_TITLES
 
 PROSPECTS_TABLE = "prospects"
 COMPANIES_TABLE = "companies_universe"

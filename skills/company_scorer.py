@@ -43,10 +43,9 @@ from skills.helpers import setup_logging
 
 logger = logging.getLogger(__name__)
 
-FINANCE_TITLES = [
-    "CFO", "Chief Financial Officer", "Controller",
-    "VP Finance", "Director of Finance",
-]
+from lib.title_tiers import TIER_1_TITLES, TIER_3_TITLES, classify_title_tier
+
+FINANCE_TITLES = TIER_1_TITLES + TIER_3_TITLES
 
 # Relative to project root
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -359,24 +358,38 @@ def apollo_finance_scan(apollo: ApolloClient, domain: str) -> list[dict]:
 
 
 def pick_best_finance_contact(contacts: list[dict]) -> dict | None:
-    """Pick highest-priority finance contact (CFO > Controller > VP > Director)."""
+    """Pick highest-priority finance contact using centralized tier system.
+
+    Priority: Tier 1 (CFO/Controller) > Tier 3 (Accounting Manager) > Tier 2 (Exec) > Unknown.
+    Within same tier, prefer CFO > Controller > VP > Director > Accounting Manager.
+    """
     if not contacts:
         return None
-    priority_map = {
+
+    # Sub-priority within tiers (lower = better)
+    _SUB_PRIORITY = {
         "cfo": 1, "chief financial officer": 1,
         "controller": 2, "financial controller": 2,
         "vp finance": 3, "vice president of finance": 3,
-        "director of finance": 4,
+        "director of finance": 4, "finance director": 4,
+        "accounting manager": 5, "finance manager": 6,
+        "treasurer": 7, "bookkeeper": 8, "staff accountant": 9,
     }
 
-    def priority(c):
-        t = c.get("title", "").lower()
-        for key, pri in priority_map.items():
-            if key in t:
-                return pri
-        return 99
+    def sort_key(c):
+        title = c.get("title", "")
+        tier, _ = classify_title_tier(title)
+        # Tier 1 = best, Tier 3 = next, Tier 2 = after, 0 = last
+        tier_order = {1: 0, 3: 1, 2: 2, 0: 3}
+        t_lower = title.lower()
+        sub = 99
+        for key, pri in _SUB_PRIORITY.items():
+            if key in t_lower:
+                sub = pri
+                break
+        return (tier_order.get(tier, 3), sub)
 
-    contacts.sort(key=priority)
+    contacts.sort(key=sort_key)
     return contacts[0]
 
 
@@ -517,10 +530,12 @@ def preprocess_company(company: dict, apollo: ApolloClient,
     finance_contact_name = ""
     finance_contact_linkedin = ""
 
+    has_accounting_mgr = False
     if best_finance:
         title_lower = best_finance.get("title", "").lower()
         has_cfo = "cfo" in title_lower or "chief financial" in title_lower
         has_controller = "controller" in title_lower
+        has_accounting_mgr = "accounting manager" in title_lower or "finance manager" in title_lower
         finance_contact_name = f"{best_finance.get('first_name', '')} {best_finance.get('last_name', '')}".strip()
         finance_contact_linkedin = best_finance.get("linkedin_url", "")
 
@@ -549,6 +564,7 @@ def preprocess_company(company: dict, apollo: ApolloClient,
         "best_contact": best_finance,
         "has_cfo": has_cfo,
         "has_controller": has_controller,
+        "has_accounting_manager": has_accounting_mgr,
         "titles_found": finance_titles_found,
         "scanned_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -586,6 +602,7 @@ def preprocess_company(company: dict, apollo: ApolloClient,
         "finance_titles": finance_titles_found,
         "has_cfo": has_cfo,
         "has_controller": has_controller,
+        "has_accounting_manager": has_accounting_mgr,
         "finance_contact_name": finance_contact_name,
         "finance_contact_linkedin": finance_contact_linkedin,
         "big_firm_auditor": big_firm_auditor,
