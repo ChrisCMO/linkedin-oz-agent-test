@@ -284,10 +284,11 @@ Scoring dimensions and weights (v2 — calibrated against VWC benchmark clients)
   * CFO or Controller found: 9-10 (strong signal of financial complexity)
   * Both CFO AND Controller: 10 (maximum — robust finance function)
   * VP Finance or Director of Finance: 7-8
-  * Only CEO/President/Owner found (no dedicated finance titles): 3-4 (may be too small/simple)
+  * Only CEO/President/Owner found (no dedicated finance titles) at a NON-private/family company: 3-4 (may be too small/simple)
+  * Only CEO/President/Owner found BUT company is private/family-owned/founder-led: 7-8 (Carillon Properties pattern — the owner IS the financial decision-maker at family businesses. They may have an internal Accounting Manager or bookkeeper not visible on LinkedIn. Benefit of the doubt.)
   * No contacts found at all: 5 (benefit of doubt — many private companies have unlisted staff)
-  CRITICAL: This dimension exists because Chad said "if they have a CFO or Controller, that indicates increased complexity" and companies with only a CEO/President "are oftentimes maybe too small."
-  OVERRIDE: When CFO/Controller is found at a company with low LinkedIn employees (<25), this is the Carillon Properties pattern — a private/family company with dedicated finance leadership that simply has a small LinkedIn footprint. The CFO presence PROVES organizational complexity regardless of apparent size. Score 10/10.
+  CRITICAL: This dimension exists because Chad said "if they have a CFO or Controller, that indicates increased complexity" and companies with only a CEO/President "are oftentimes maybe too small." HOWEVER, for private/family-owned companies, the Owner/CEO typically makes audit/tax decisions directly — similar to how Carillon Properties (family-owned, no finance contacts found) scored 84 as a benchmark client.
+  OVERRIDE: When CFO/Controller is found at a company with low LinkedIn employees (<25), this is a strong signal — dedicated finance leadership despite small LinkedIn footprint. Score 10/10.
 
 HARD EXCLUSIONS (score 0 overall):
 - Revenue above $150M
@@ -304,6 +305,7 @@ CALIBRATION REFERENCE (VWC benchmark clients - all should score 80+):
 - Carillon Properties: CRE/Hospitality, unknown size, Kirkland WA, private family, no finance contacts found = ~84
 - AudioControl Pro: Manufacturing/electronics, 27 LinkedIn emp / 90 Apollo emp, CFO found, Seattle WA, private = ~83 (use Apollo's higher count, CFO overrides small LinkedIn footprint)
 - SSI Construction: Construction, 12 LinkedIn emp, Co-Founder/CFO found, Kent WA, private = ~82 (Carillon pattern — CFO proves complexity despite small LinkedIn count)
+- Seattle Chocolate Company: Food manufacturing, 40 emp, Owner/CEO found (no CFO), Seattle WA, private family-owned = ~82 (Carillon pattern — family-owned, owner is decision-maker, no visible finance staff but legitimate ICP target)
 
 Return ONLY valid JSON."""
 
