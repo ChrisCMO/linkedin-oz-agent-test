@@ -270,7 +270,7 @@ Scoring dimensions and weights (v2 — calibrated against VWC benchmark clients)
 
 - industry_fit (0-20): Target industries in priority order: Manufacturing (#1), Commercial RE (#2), Professional Services (#3), Hospitality (#4), Nonprofit (#5), Construction (#6). Score 18-20 for top priority, 14-17 for secondary. Be GENEROUS with industry matching (e.g., "machinery" = manufacturing, "civil engineering" = professional services, "aviation & aerospace" = manufacturing).
 
-- company_size (0-20): Employee count. Use linkedin_employees as the PRIMARY source (most reliable per client feedback). Fall back to apollo_employees only if LinkedIn is unavailable. Sweet spot: 100-300 employees (18-20). Acceptable: 25-750 (14-17). Slightly outside: 11-24 or 751-1000 (10-13). Below 11 or above 1000 (5-9). Unknown for private companies: score 14/20 (benefit of doubt).
+- company_size (0-20): Employee count. IMPORTANT: LinkedIn employee count is the MINIMUM — it only counts people who list the company on their profile. The actual company is almost always larger. When apollo_employees > linkedin_employees, use the HIGHER number (Apollo's estimate is closer to reality). When apollo_employees < linkedin_employees or is missing, use LinkedIn. Sweet spot: 100-300 employees (18-20). Acceptable: 25-750 (14-17). Slightly outside: 11-24 or 751-1000 (10-13). Below 11 or above 1000 (5-9). Unknown for private companies: score 14/20 (benefit of doubt). CRITICAL: If a CFO or Controller is found at a company with low LinkedIn employees (<25), the company is likely larger than LinkedIn shows — score at least 14/20 (benefit of doubt, Carillon Properties pattern).
 
 - revenue_fit (0-10): Revenue range. IMPORTANT: Revenue data is frequently unreliable for private companies — Chad (VWC partner) confirmed this. If revenue is marked as "SUSPECT" or missing, score 7/10 (strong benefit of doubt). Sweet spot: $50M-$100M (9-10). Acceptable: $5M-$150M (7-8). Below $5M with employees suggesting larger company: 7 (trust employees over revenue). Hard exclude above $150M (score 0 overall).
 
@@ -287,6 +287,7 @@ Scoring dimensions and weights (v2 — calibrated against VWC benchmark clients)
   * Only CEO/President/Owner found (no dedicated finance titles): 3-4 (may be too small/simple)
   * No contacts found at all: 5 (benefit of doubt — many private companies have unlisted staff)
   CRITICAL: This dimension exists because Chad said "if they have a CFO or Controller, that indicates increased complexity" and companies with only a CEO/President "are oftentimes maybe too small."
+  OVERRIDE: When CFO/Controller is found at a company with low LinkedIn employees (<25), this is the Carillon Properties pattern — a private/family company with dedicated finance leadership that simply has a small LinkedIn footprint. The CFO presence PROVES organizational complexity regardless of apparent size. Score 10/10.
 
 HARD EXCLUSIONS (score 0 overall):
 - Revenue above $150M
@@ -301,6 +302,8 @@ CALIBRATION REFERENCE (VWC benchmark clients - all should score 80+):
 - Shannon & Wilson: Engineering, 320 emp, $28M rev, Seattle WA, ESOP, has CFO = ~94
 - Skills Inc.: Nonprofit/Aerospace mfg, 430 emp, $26M rev, Auburn WA, nonprofit, has Controller = ~89
 - Carillon Properties: CRE/Hospitality, unknown size, Kirkland WA, private family, no finance contacts found = ~84
+- AudioControl Pro: Manufacturing/electronics, 27 LinkedIn emp / 90 Apollo emp, CFO found, Seattle WA, private = ~83 (use Apollo's higher count, CFO overrides small LinkedIn footprint)
+- SSI Construction: Construction, 12 LinkedIn emp, Co-Founder/CFO found, Kent WA, private = ~82 (Carillon pattern — CFO proves complexity despite small LinkedIn count)
 
 Return ONLY valid JSON."""
 
