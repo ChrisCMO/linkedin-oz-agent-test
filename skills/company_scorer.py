@@ -671,13 +671,10 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
             # --- Pre-filter: skip unenrichable companies to save Apollo credits ---
             li_url = company.get("linkedin_url", "")
             if not domain and not li_url:
-                print("NO DOMAIN/LINKEDIN — skipping (unenrichable)")
+                print("INCOMPLETE — holding for later (no domain or LinkedIn URL)")
                 sb.table(TABLE).update({
-                    "pipeline_status": "scored",
-                    "pipeline_action": "SKIP",
-                    "icp_score": 0,
-                    "reasoning": "No domain or LinkedIn URL — cannot enrich",
-                    "scored_at": datetime.now(timezone.utc).isoformat(),
+                    "pipeline_status": "incomplete",
+                    "reasoning": "No domain or LinkedIn URL — holding for manual review or data enrichment",
                 }).eq("id", company_id).execute()
                 skipped_count += 1
                 continue
