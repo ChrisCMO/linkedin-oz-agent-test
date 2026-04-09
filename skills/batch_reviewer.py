@@ -438,7 +438,7 @@ def _send_review_email(
     from lib.outlook import OutlookClient
 
     date = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
-    dashboard_url = f"https://localhost:3000/clients/{tenant_id}/review-batches"
+    dashboard_url = f"https://linkedin-vwc-outreach.vercel.app/clients/{tenant_id}/review-batches"
 
     # Build issues summary HTML
     issues_html = ""
