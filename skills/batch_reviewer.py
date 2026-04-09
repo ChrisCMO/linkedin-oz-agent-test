@@ -63,7 +63,7 @@ def is_excluded(company_name: str, domain: str | None, exclusion_list: dict) -> 
             if entry["domain"] and entry["domain"] == domain_lower:
                 return entry["reason"]
     for entry in exclusion_list["entries"]:
-        if entry["name"] and (entry["name"] in name_lower or name_lower in entry["name"]):
+        if entry["name"] and entry["name"] == name_lower:
             return entry["reason"]
     return None
 

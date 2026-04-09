@@ -51,6 +51,7 @@ FINANCE_TITLES = [
 # Relative to project root
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BLACKLIST_FILE = os.path.join(BASE_DIR, "data", "blacklist.csv")
+FORM5500_FILE = os.path.join(BASE_DIR, "data", "form5500_big_firm_clients.csv")
 PSBJ_FILE = os.path.join(BASE_DIR, "docs", "deliverables", "week2", "universe",
                           "private", "psbj_family_owned_wa_2026_86.csv")
 
@@ -86,7 +87,7 @@ def is_blacklisted(company_name: str, domain: str | None, blacklist: dict) -> bo
     if domain_lower and domain_lower in blacklist["domains"]:
         return True
     for bl_name in blacklist["names"]:
-        if bl_name in name_lower or name_lower in bl_name:
+        if bl_name == name_lower:
             return True
     return False
 
@@ -116,11 +117,68 @@ def load_psbj() -> dict:
 
 
 def psbj_match(company_name: str, psbj_data: dict) -> dict | None:
-    """Check if company name matches PSBJ list (substring)."""
+    """Check if company name matches PSBJ list (exact or contained)."""
     name_lower = company_name.strip().lower()
+    # Exact match first
+    if name_lower in psbj_data:
+        return psbj_data[name_lower]
+    # PSBJ names are trusted data — allow substring match only if PSBJ name
+    # is long enough (4+ words) to avoid false positives
     for psbj_name, data in psbj_data.items():
-        if psbj_name in name_lower or name_lower in psbj_name:
+        if len(psbj_name.split()) >= 3 and (psbj_name in name_lower or name_lower in psbj_name):
             return data
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Form 5500 cross-reference (Big Firm auditor clients)
+# ---------------------------------------------------------------------------
+
+def load_form5500() -> dict:
+    """Load Form 5500 data — companies audited by Big Four/large CPA firms.
+
+    Being a client of a large firm is a POSITIVE signal for VWC:
+    these companies may feel underserved ("small fish in a big pond").
+    """
+    f5500 = {}
+    if not os.path.exists(FORM5500_FILE):
+        logger.info("Form 5500 file not found, skipping cross-reference")
+        return f5500
+    with open(FORM5500_FILE) as f:
+        for row in csv.DictReader(f):
+            name = row.get("company", "").strip().lower()
+            if name:
+                # Keep first match (may have multiple plans)
+                if name not in f5500:
+                    f5500[name] = {
+                        "auditor": row.get("auditor", "").strip(),
+                        "city": row.get("city", "").strip(),
+                        "state": row.get("state", "").strip(),
+                        "plan": row.get("plan", "").strip(),
+                        "participants": row.get("participants", "").strip(),
+                    }
+    return f5500
+
+
+def form5500_match(company_name: str, f5500_data: dict) -> dict | None:
+    """Check if company appears in Form 5500 big firm client list."""
+    name_lower = company_name.strip().lower()
+    # Exact match
+    if name_lower in f5500_data:
+        return f5500_data[name_lower]
+    # Try with common suffixes removed
+    for suffix in [", inc.", ", inc", " inc.", " inc", ", llc", " llc",
+                   ", ltd", " ltd", " co.", " co", " corp.", " corp",
+                   ", l.p.", " l.p."]:
+        stripped = name_lower.rstrip(".").removesuffix(suffix)
+        if stripped != name_lower and stripped in f5500_data:
+            return f5500_data[stripped]
+    # Try adding suffixes to match Form 5500 names
+    for suffix in [", inc.", " inc.", ", llc", " llc", " corporation",
+                   " company", " co."]:
+        candidate = name_lower + suffix
+        if candidate in f5500_data:
+            return f5500_data[candidate]
     return None
 
 
@@ -430,8 +488,8 @@ def load_icp_config(sb, tenant_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def preprocess_company(company: dict, apollo: ApolloClient,
-                       psbj_data: dict) -> dict:
-    """Run finance scan, PSBJ cross-ref, revenue mismatch for one company.
+                       psbj_data: dict, f5500_data: dict | None = None) -> dict:
+    """Run finance scan, PSBJ cross-ref, Form 5500 cross-ref for one company.
 
     Returns a dict ready for score_companies_v2().
     """
@@ -491,6 +549,15 @@ def preprocess_company(company: dict, apollo: ApolloClient,
     if match:
         enrichment_data["psbj"] = match
 
+    # --- Form 5500 cross-reference (big firm auditor = positive signal) ---
+    big_firm_auditor = ""
+    f5500_match_data = form5500_match(name, f5500_data or {})
+    if f5500_match_data:
+        big_firm_auditor = f5500_match_data.get("auditor", "")
+        notes += f"Current auditor: {big_firm_auditor} (Form 5500 filing). "
+        logger.info("  Form 5500 match for %s: audited by %s", name, big_firm_auditor)
+        enrichment_data["form5500"] = f5500_match_data
+
     # Apollo employees from enrichment_data (if enriched)
     apollo_employees = ""
     apollo_enrich = enrichment_data.get("apollo", {})
@@ -515,6 +582,7 @@ def preprocess_company(company: dict, apollo: ApolloClient,
         "has_controller": has_controller,
         "finance_contact_name": finance_contact_name,
         "finance_contact_linkedin": finance_contact_linkedin,
+        "big_firm_auditor": big_firm_auditor,
         "notes": notes,
         # Pass through for DB update
         "_enrichment_data": enrichment_data,
@@ -533,9 +601,11 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
     apollo = ApolloClient()
     blacklist = load_blacklist()
     psbj_data = load_psbj()
+    f5500_data = load_form5500()
 
     print(f"  Blacklist: {len(blacklist['names'])} names, {len(blacklist['domains'])} domains")
     print(f"  PSBJ: {len(psbj_data)} companies loaded")
+    print(f"  Form 5500: {len(f5500_data)} big-firm clients loaded")
 
     # Phase 0: Batch LinkedIn company page scrape
     linkedin_scrape_batch(sb, companies)
@@ -602,7 +672,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
             company = refreshed.data
 
             # --- Steps 3b/3c/3d: Finance scan + PSBJ + revenue mismatch ---
-            scoring_input = preprocess_company(company, apollo, psbj_data)
+            scoring_input = preprocess_company(company, apollo, psbj_data, f5500_data)
 
             # Persist enrichment_data with finance scan results
             sb.table(TABLE).update({

@@ -266,6 +266,8 @@ Return a JSON object with a "companies" key containing an array where each eleme
 - "reasoning": 1-2 sentence explanation
 - "calibration_notes": any insights about scoring
 
+Base dimensions total 100. The big_firm_signal (0-8) is a BOLSTER-ONLY bonus — add it on top, then cap the final score at 100.
+
 Scoring dimensions and weights (v2 — calibrated against VWC benchmark clients):
 
 - industry_fit (0-20): Target industries in priority order: Manufacturing (#1), Commercial RE (#2), Professional Services (#3), Hospitality (#4), Nonprofit (#5), Construction (#6). Score 18-20 for top priority, 14-17 for secondary. Be GENEROUS with industry matching (e.g., "machinery" = manufacturing, "civil engineering" = professional services, "aviation & aerospace" = manufacturing).
@@ -279,6 +281,13 @@ Scoring dimensions and weights (v2 — calibrated against VWC benchmark clients)
 - ownership_structure (0-15): Private, family-owned, ESOP, founder-led = 15. Unknown but appears private = 12. PE-backed = 0 (hard exclude). Public = 0 for Audit & Tax ICP.
 
 - digital_footprint (0-10): How discoverable is the company online? LinkedIn company page with followers/description (0-4). Google Places verified (0-2). Company website exists (0-2). Findable online via search (0-2). IMPORTANT: A weak digital footprint should NOT disqualify an otherwise ideal private company.
+
+- big_firm_signal (0-8): Is the company currently audited by a Big Four or large CPA firm? This is a POSITIVE signal — these companies may feel underserved ("small fish in a big pond") and are prime targets for VWC. Data comes from Form 5500 filings. If big_firm_auditor is present:
+  * Big Four (Deloitte, PwC, EY, KPMG): 8 (strongest signal)
+  * Large national/regional (BDO, Baker Tilly, Moss Adams, Sweeney Conrad, Clark Nuber, Plant Moran): 7
+  * Other named auditor: 5
+  * No data / not found: 0 (no penalty — most private companies won't appear)
+  IMPORTANT: This is a BOLSTER-ONLY signal. It can only increase a score, never decrease it. A company without Form 5500 data should not be penalized.
 
 - organizational_complexity (0-10): Does the company have dedicated finance leadership? This signals the company is complex enough to need audit/tax services. Score based on finance_titles field:
   * CFO or Controller found: 9-10 (strong signal of financial complexity)
@@ -397,6 +406,7 @@ def score_companies_v2(companies: list[dict], icp_config: dict | None = None, mo
             "has_controller": c.get("has_controller", False),
             "finance_contact_name": c.get("finance_contact_name", ""),
             "finance_contact_linkedin": c.get("finance_contact_linkedin", ""),
+            "big_firm_auditor": c.get("big_firm_auditor", ""),
             "notes": c.get("notes", ""),
         })
 
