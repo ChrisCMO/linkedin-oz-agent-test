@@ -159,16 +159,16 @@ def xray_discover_finance_contacts(
     raw_contacts = _run_xray_queries(tier1_kw, company_name, domain, match_terms, seen_urls)
     logger.info("  Tier 1: %d raw contacts", len(raw_contacts))
 
-    # Tier 2 — run if allowed and < 2 Tier 1 contacts found
-    if max_tier >= 2 and len(raw_contacts) < 2:
+    # Tier 2 — always run if allowed (find Owner/CEO/President)
+    if max_tier >= 2:
         tier2_kw = get_xray_keywords(tier=2)
         logger.info("X-ray Tier 2: searching executive titles for %s", domain or company_name)
         tier2_contacts = _run_xray_queries(tier2_kw, company_name, domain, match_terms, seen_urls)
         raw_contacts.extend(tier2_contacts)
         logger.info("  Tier 2: %d additional contacts", len(tier2_contacts))
 
-    # Tier 3 — run if allowed and still 0 contacts
-    if max_tier >= 3 and len(raw_contacts) == 0:
+    # Tier 3 — always run if allowed (find Accounting Manager, Finance Manager, etc.)
+    if max_tier >= 3:
         tier3_kw = get_xray_keywords(tier=3)
         logger.info("X-ray Tier 3: searching junior finance titles for %s", domain or company_name)
         tier3_contacts = _run_xray_queries(tier3_kw, company_name, domain, match_terms, seen_urls)
