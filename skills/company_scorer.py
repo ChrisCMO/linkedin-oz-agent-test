@@ -648,21 +648,22 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
         try:
             scores = score_companies_v2(batch_inputs)
 
-            # Build lookup by company_id or company_name
+            # Build lookup by company_id or company_name (case-insensitive)
             score_lookup = {}
             for s in scores:
                 key = s.get("company_id", s.get("company_name", ""))
                 score_lookup[key] = s
-                # Also index by name for fuzzy matching
+                # Also index by lowercase name for case-insensitive matching
                 name_key = s.get("company_name", "")
                 if name_key:
                     score_lookup[name_key] = s
+                    score_lookup[name_key.lower()] = s
 
             for company, scoring_input in batch:
                 company_id = company["id"]
                 name = company.get("name", "Unknown")
 
-                result = score_lookup.get(company_id) or score_lookup.get(name)
+                result = score_lookup.get(company_id) or score_lookup.get(name) or score_lookup.get(name.lower())
                 if not result:
                     logger.warning("No score returned for %s", name)
                     sb.table(TABLE).update({

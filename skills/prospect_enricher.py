@@ -163,7 +163,10 @@ def apollo_crossmatch_contact(apollo: ApolloClient, first_name: str, last_name: 
         for p in result.get("people", []):
             p_first = p.get("first_name", "").lower()
             p_last = p.get("last_name", "").lower()
-            if p_last == last_name.lower() and (p_first == first_name.lower() or p_first[:3] == first_name.lower()[:3]):
+            # Strict match: exact last name + (exact first name OR one is prefix of other)
+            # "Daniel" matches "Dan" (prefix), but "Jon" does NOT match "John"
+            fn_lower = first_name.lower()
+            if p_last == last_name.lower() and (p_first == fn_lower or p_first.startswith(fn_lower) or fn_lower.startswith(p_first)):
                 return {
                     "apollo_id": p.get("id", ""),
                     "linkedin_url": p.get("linkedin_url", ""),
