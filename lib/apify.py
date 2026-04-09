@@ -203,6 +203,18 @@ def extract_domain(website: str | None) -> str | None:
     return raw if raw else None
 
 
+
+# Industry words too generic for company matching — "construction" alone
+# matches thousands of unrelated companies.
+_INDUSTRY_WORDS = {
+    "construction", "manufacturing", "engineering", "consulting",
+    "technology", "solutions", "industries", "industrial", "enterprises",
+    "associates", "systems", "design", "development", "international",
+    "logistics", "properties", "mechanical", "electrical", "aerospace",
+    "fabrication", "welding", "machining", "automation", "supply",
+}
+
+
 def build_company_match_terms(company_name: str) -> list[str]:
     """Build match terms to verify X-ray results belong to the right company.
 
@@ -210,6 +222,8 @@ def build_company_match_terms(company_name: str) -> list[str]:
       → ["seattle manufacturing corporation", "seattle manufacturing"]
     For "TASC - Technical & Assembly Services Corporation":
       → ["technical & assembly services corporation", "technical assembly"]
+    For "CJ Construction Company":
+      → ["cj construction"] (keeps short words when needed to avoid generic match)
     """
     GENERIC_WORDS = {
         "the", "inc", "inc.", "llc", "corp", "corp.", "corporation",
@@ -237,6 +251,17 @@ def build_company_match_terms(company_name: str) -> list[str]:
         if len(words) >= 2:
             terms.append(" ".join(words[:2]).lower())
         elif words:
-            terms.append(words[0].lower())
+            # Single word remaining — check if it's too generic (industry word)
+            if words[0].lower() in _INDUSTRY_WORDS:
+                # Include ALL words (even short ones) to make a more specific term
+                # e.g., "CJ Construction" → "cj construction" instead of just "construction"
+                all_words = [w for w in name.split()
+                             if w.lower() not in GENERIC_WORDS]
+                if len(all_words) >= 2:
+                    terms.append(" ".join(all_words[:2]).lower())
+                else:
+                    terms.append(words[0].lower())
+            else:
+                terms.append(words[0].lower())
 
     return terms

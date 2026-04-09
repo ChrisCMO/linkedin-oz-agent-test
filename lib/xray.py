@@ -193,10 +193,31 @@ def xray_discover_finance_contacts(
             current_companies = [pos.get("companyName", "").lower() for pos in current_positions]
             current_titles = [pos.get("title", "").lower() for pos in current_positions]
 
+            company_text = " ".join(current_companies + [headline])
             company_matched = any(
-                term in " ".join(current_companies + [headline])
+                term in company_text
                 for term in match_terms
             )
+
+            # Extra check: if match term is a single generic industry word,
+            # require at least 2 match terms to hit, or verify location is PNW
+            if company_matched and len(match_terms) == 1:
+                from lib.apify import _INDUSTRY_WORDS
+                term = match_terms[0]
+                single_words = term.split()
+                if len(single_words) == 1 and single_words[0] in _INDUSTRY_WORDS:
+                    # Generic match — verify location to reduce false positives
+                    profile_location = (profile.get("location", "") or "").lower()
+                    pnw_markers = ["seattle", "bellevue", "tacoma", "washington",
+                                   "portland", "oregon", ", wa", ", or"]
+                    if not any(m in profile_location for m in pnw_markers):
+                        actual = current_companies[0] if current_companies else headline[:50]
+                        loc = profile.get("location", "unknown location")
+                        logger.info("  REJECTED (generic match + wrong location): %s — at \"%s\" in %s",
+                                    c["name"], actual, loc)
+                        rejected.append({**c, "reason": f"generic match, wrong location: {actual} ({loc})"})
+                        continue
+
             if not company_matched:
                 actual = current_companies[0] if current_companies else headline[:50]
                 logger.info("  REJECTED (wrong company): %s — actually at \"%s\"", c["name"], actual)
