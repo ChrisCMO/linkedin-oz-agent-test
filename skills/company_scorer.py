@@ -872,7 +872,7 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
             domain = company.get("domain", "")
             print(f"  X-ray: {name}...", end=" ", flush=True)
 
-            xray_result = xray_discover_finance_contacts(name, domain=domain or None)
+            xray_result = xray_discover_finance_contacts(name, domain=domain or None, max_tier=3)
             verified = xray_result.get("verified", [])
 
             # Store X-ray results in enrichment_data
