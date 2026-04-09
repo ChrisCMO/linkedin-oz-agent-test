@@ -996,6 +996,145 @@ def reset_stale_statuses(sb, tenant_id: str):
             print(f"  Reset {count} stale '{stale_status}' → '{reset_to}'")
 
 
+# ---------------------------------------------------------------------------
+# Phase 5: Contact discovery for scored companies
+# ---------------------------------------------------------------------------
+
+def run_contact_discovery(sb, companies: list[dict], tenant_id: str) -> tuple[int, int]:
+    """Run full multi-source contact discovery for scored companies.
+
+    Stores stub contacts in prospects table (status: sourced) with all
+    source IDs preserved. Logs each API call to discovery_log.
+
+    Returns (total_contacts, errors).
+    """
+    from lib.contact_discovery import discover_all_contacts
+
+    apollo = ApolloClient()
+    campaign_id = "00000000-0000-0000-0000-000000000001"
+    total_contacts = 0
+    total_errors = 0
+
+    for i, company in enumerate(companies):
+        company_id = company["id"]
+        name = company.get("name", "Unknown")
+
+        print(f"  [{i+1}/{len(companies)}] {name} (score: {company.get('icp_score', '?')})...")
+
+        def log_discovery(source, endpoint, found, verified, rejected, duration_ms, error, params):
+            """Audit logger — writes to discovery_log table."""
+            try:
+                sb.table("discovery_log").insert({
+                    "tenant_id": tenant_id,
+                    "company_id": company_id,
+                    "company_name": name,
+                    "source": source,
+                    "actor_or_endpoint": endpoint,
+                    "contacts_found": found,
+                    "contacts_verified": verified,
+                    "contacts_rejected": rejected,
+                    "duration_ms": duration_ms,
+                    "error_message": error,
+                    "request_params": params,
+                }).execute()
+            except Exception as e:
+                logger.warning("Failed to log discovery for %s: %s", name, e)
+
+        try:
+            contacts = discover_all_contacts(apollo, company, log_fn=log_discovery)
+
+            # Store stub contacts in prospects table
+            stubs_created = 0
+            for c in contacts:
+                slug = c.get("linkedin_slug", "")
+
+                # Dedup: check if prospect already exists
+                if slug:
+                    existing = (
+                        sb.table("prospects")
+                        .select("id")
+                        .eq("tenant_id", tenant_id)
+                        .eq("linkedin_slug", slug)
+                        .limit(1)
+                        .execute()
+                    )
+                    if existing.data:
+                        continue
+
+                # Use valid prospect_source enum
+                source_enum = "apollo_search" if c.get("apollo_id") else "linkedin_search"
+
+                sb.table("prospects").insert({
+                    "tenant_id": tenant_id,
+                    "campaign_id": campaign_id,
+                    "first_name": c.get("first_name", ""),
+                    "last_name": c.get("last_name", ""),
+                    "title": c.get("title", ""),
+                    "headline": c.get("headline", ""),
+                    "seniority": c.get("seniority", ""),
+                    "email": c.get("email") or None,
+                    "linkedin_url": c.get("linkedin_url", ""),
+                    "linkedin_slug": slug,
+                    "apollo_person_id": c.get("apollo_id") or None,
+                    "zoominfo_contact_id": c.get("zoominfo_id") or None,
+                    "location": ", ".join(filter(None, [
+                        c.get("city", ""), c.get("state", "")
+                    ])) or None,
+                    "company_name": name,
+                    "company_domain": company.get("domain") or None,
+                    "company_linkedin_url": company.get("linkedin_url", ""),
+                    "icp_score": company.get("icp_score"),
+                    "status": "sourced",
+                    "source": source_enum,
+                    "data_source": ", ".join(c.get("sources", [])),
+                }).execute()
+                stubs_created += 1
+
+            # Update enrichment_data with discovery summary
+            enrichment_data = company.get("enrichment_data") or {}
+            enrichment_data["contact_discovery"] = {
+                "total_found": len(contacts),
+                "stubs_created": stubs_created,
+                "sources_used": list(set(
+                    s for c in contacts for s in c.get("sources", [])
+                )),
+                "tier_breakdown": {
+                    "tier1": sum(1 for c in contacts if c.get("tier") == 1),
+                    "tier2": sum(1 for c in contacts if c.get("tier") == 2),
+                    "tier3": sum(1 for c in contacts if c.get("tier") == 3),
+                },
+                "discovered_at": datetime.now(timezone.utc).isoformat(),
+            }
+            sb.table(TABLE).update({
+                "enrichment_data": enrichment_data,
+            }).eq("id", company_id).execute()
+
+            total_contacts += stubs_created
+            print(f"    → {len(contacts)} contacts, {stubs_created} new stubs")
+
+        except Exception as e:
+            logger.error("Contact discovery failed for %s: %s", name, e)
+            print(f"    → ERROR: {e}")
+            total_errors += 1
+
+            # Log the error
+            try:
+                sb.table("discovery_log").insert({
+                    "tenant_id": tenant_id,
+                    "company_id": company_id,
+                    "company_name": name,
+                    "source": "pipeline_error",
+                    "actor_or_endpoint": "discover_all_contacts",
+                    "error_message": str(e)[:500],
+                }).execute()
+            except Exception:
+                pass
+
+        time.sleep(1)
+
+    return total_contacts, total_errors
+
+
 def run(tenant_id: str, batch_id: str | None = None, limit: int = 100,
         company_ids: list[str] | None = None):
     """Main entry point."""
@@ -1027,8 +1166,44 @@ def run(tenant_id: str, batch_id: str | None = None, limit: int = 100,
 
     scored, errors, skipped = process_companies(sb, companies, icp_config)
 
-    print(f"\nDone: {scored} scored, {errors} errors, {skipped} skipped "
+    print(f"\nScoring done: {scored} scored, {errors} errors, {skipped} skipped "
           f"out of {len(companies)} companies")
+
+    # Phase 5: Full contact discovery for all scored companies
+    scored_companies = (
+        sb.table(TABLE)
+        .select("id, name, domain, location, linkedin_url, icp_score, pipeline_action, enrichment_data")
+        .eq("tenant_id", tenant_id)
+        .eq("pipeline_status", "scored")
+        .not_.is_("pipeline_action", "null")
+        .order("icp_score", desc=True)
+    )
+    if batch_id:
+        scored_companies = scored_companies.eq("batch_id", batch_id)
+    if company_ids:
+        scored_companies = scored_companies.in_("id", company_ids)
+    else:
+        scored_companies = scored_companies.limit(limit)
+
+    scored_data = scored_companies.execute().data or []
+
+    # Filter to companies that haven't had discovery run yet
+    needs_discovery = []
+    for c in scored_data:
+        enrich = c.get("enrichment_data") or {}
+        if "contact_discovery" not in enrich:
+            needs_discovery.append(c)
+
+    if needs_discovery:
+        print(f"\n--- Phase 5: Contact discovery for {len(needs_discovery)} scored companies ---")
+        discovery_contacts, discovery_errors = run_contact_discovery(
+            sb, needs_discovery, tenant_id
+        )
+        print(f"Discovery done: {discovery_contacts} contacts found, {discovery_errors} errors")
+    else:
+        print("\nNo companies need contact discovery (all already processed)")
+
+    print(f"\nPipeline complete.")
 
 
 def main():

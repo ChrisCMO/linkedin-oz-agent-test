@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .DS_Store
 dashboard
+data/backups/*.csv
+data/backups/*.json
+data/backups/*.sql
