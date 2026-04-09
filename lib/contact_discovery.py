@@ -21,7 +21,8 @@ from lib.title_tiers import (
     TIER_1_TITLES, TIER_2_TITLES, TIER_3_TITLES,
     classify_title_tier,
 )
-from lib.xray import xray_discover_finance_contacts, xray_find_contact_linkedin
+from lib.xray import xray_discover_finance_contacts
+from lib.serper import serper_search
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,27 @@ def crossmatch_apollo(apollo: ApolloClient, first_name: str, last_name: str,
 
 
 # ---------------------------------------------------------------------------
+# Fallback: Serper LinkedIn URL lookup for contacts missing LinkedIn
+# ---------------------------------------------------------------------------
+
+def serper_find_linkedin_url(first_name: str, last_name: str,
+                             company_name: str) -> str | None:
+    """Use Serper to google a person's LinkedIn profile URL.
+
+    Only used as fallback when Apollo cross-match has no LinkedIn URL.
+    """
+    query = f'site:linkedin.com/in "{first_name} {last_name}" "{company_name}"'
+    results = serper_search(query, num=3)
+    name_lower = first_name.lower()
+    for r in results:
+        url = r.get("url", "")
+        title = (r.get("title", "") or "").lower()
+        if "linkedin.com/in/" in url and name_lower in title:
+            return url
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator: full multi-source discovery
 # ---------------------------------------------------------------------------
 
@@ -306,6 +328,7 @@ def discover_all_contacts(apollo: ApolloClient, company: dict,
         zi_ms = int((time.time() - t0) * 1000)
 
         # Cross-match against Apollo for IDs + LinkedIn URLs
+        # If Apollo has no match or no LinkedIn URL → fall back to Serper
         for c in zi_contacts:
             match = crossmatch_apollo(apollo, c["first_name"], c["last_name"], name)
             if match:
@@ -314,6 +337,17 @@ def discover_all_contacts(apollo: ApolloClient, company: dict,
                 c["linkedin_slug"] = _extract_slug(match.get("linkedin_url", ""))
                 c["email"] = match.get("email", "") or c.get("email", "")
                 c["sources"].append("apollo")
+
+            # Serper fallback if still no LinkedIn URL
+            if not c.get("linkedin_url"):
+                li_url = serper_find_linkedin_url(c["first_name"], c["last_name"], name)
+                if li_url:
+                    c["linkedin_url"] = li_url
+                    c["linkedin_slug"] = _extract_slug(li_url)
+                    if "serper" not in c.get("sources", []):
+                        c["sources"].append("serper")
+                    logger.info("  Serper found LinkedIn for %s %s", c["first_name"], c["last_name"])
+
             time.sleep(0.3)
 
         added = add_contacts(zi_contacts, "zoominfo")
