@@ -374,13 +374,8 @@ def discover_all_contacts(apollo: ApolloClient, company: dict,
             reason = "skipped: Tier 1 already found" if has_finance else "skipped: no domain"
             log_fn("xray", "serp+profile_scrape", 0, 0, 0, 0, reason, {})
 
-    # --- Find LinkedIn URLs for contacts missing them ---
-    needs_linkedin = [c for c in all_contacts if not c.get("linkedin_url")]
-    if needs_linkedin:
-        all_contacts = xray_find_contact_linkedin(all_contacts, name)
-        # Update slugs
-        for c in all_contacts:
-            if c.get("linkedin_url") and not c.get("linkedin_slug"):
-                c["linkedin_slug"] = _extract_slug(c["linkedin_url"])
+    # NOTE: Do NOT use Serper/X-ray to find LinkedIn URLs for Apollo/ZoomInfo contacts.
+    # Those URLs will come from Apollo enrichment in Stage 2 (prospect pipeline).
+    # Serper credits should only be spent on X-ray discovery of NEW contacts.
 
     return all_contacts
