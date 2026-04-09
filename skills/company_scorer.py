@@ -229,6 +229,20 @@ def linkedin_scrape_batch(sb, companies: list[dict]):
             # Branch info stored in enrichment_data for Chad's review
             logger.info("  %s: Seattle is a branch — HQ: %s", c.get("name", "?"), hq_location)
 
+        # Fix wrong location: if DB says non-PNW but HQ is actually PNW, correct it
+        if not is_local and hq_is_local and hq_location:
+            hq_display = ", ".join(filter(None, [hq_city.title(), "WA"]))
+            for loc in locations:
+                if loc.get("headquarter"):
+                    hq_display = ", ".join(filter(None, [
+                        loc.get("city", ""),
+                        loc.get("geographicArea", ""),
+                    ]))
+                    break
+            updates["location"] = hq_display
+            logger.info("  %s: corrected location from '%s' to HQ '%s'",
+                        c.get("name", "?"), current_location, hq_display)
+
         # Store full scrape data in enrichment_data
         enrichment_data = c.get("enrichment_data") or {}
         enrichment_data["linkedin_scrape"] = {
