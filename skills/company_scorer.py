@@ -858,7 +858,9 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
         action = refreshed.data.get("pipeline_action")
         enrich = refreshed.data.get("enrichment_data") or {}
         finance_contacts = (enrich.get("finance_scan") or {}).get("contacts", [])
-        if action == "REVIEW" and not finance_contacts:
+        # Skip if already X-ray rescued (checkpoint)
+        xray_done = bool(enrich.get("xray_rescue"))
+        if action == "REVIEW" and not finance_contacts and not xray_done:
             review_no_contacts.append((company, si))
 
     if review_no_contacts:
@@ -976,22 +978,50 @@ def reset_stale_statuses(sb, tenant_id: str):
     """Reset companies stuck in transitional statuses back to retryable state.
 
     Companies in 'enriching' or 'scoring' for >30 min are likely from a crashed run.
+    Smart reset: companies in 'scoring' that already have an icp_score get
+    promoted to 'scored' (not re-enriched), saving Apollo + GPT credits.
     """
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
 
-    for stale_status, reset_to in [("enriching", "raw"), ("scoring", "enriched")]:
-        result = (
-            sb.table(TABLE)
-            .update({"pipeline_status": reset_to})
-            .eq("tenant_id", tenant_id)
-            .eq("pipeline_status", stale_status)
-            .lt("updated_at", cutoff)
-            .execute()
-        )
-        count = len(result.data) if result.data else 0
-        if count:
-            print(f"  Reset {count} stale '{stale_status}' → '{reset_to}'")
+    # Reset enriching → raw (needs re-enrichment)
+    result = (
+        sb.table(TABLE)
+        .update({"pipeline_status": "raw"})
+        .eq("tenant_id", tenant_id)
+        .eq("pipeline_status", "enriching")
+        .lt("updated_at", cutoff)
+        .execute()
+    )
+    count = len(result.data) if result.data else 0
+    if count:
+        print(f"  Reset {count} stale 'enriching' → 'raw'")
+
+    # Smart reset for scoring: if already has a score, promote to scored
+    stale_scoring = (
+        sb.table(TABLE)
+        .select("id, icp_score")
+        .eq("tenant_id", tenant_id)
+        .eq("pipeline_status", "scoring")
+        .lt("updated_at", cutoff)
+        .execute()
+    )
+    if stale_scoring.data:
+        scored_count = 0
+        enriched_count = 0
+        for c in stale_scoring.data:
+            if c.get("icp_score") and c["icp_score"] > 0:
+                # Already scored — promote to scored (skip re-scoring)
+                sb.table(TABLE).update({"pipeline_status": "scored"}).eq("id", c["id"]).execute()
+                scored_count += 1
+            else:
+                # Not scored yet — reset to enriched for re-scoring
+                sb.table(TABLE).update({"pipeline_status": "enriched"}).eq("id", c["id"]).execute()
+                enriched_count += 1
+        if scored_count:
+            print(f"  Recovered {scored_count} stale 'scoring' → 'scored' (already had scores)")
+        if enriched_count:
+            print(f"  Reset {enriched_count} stale 'scoring' → 'enriched' (no score yet)")
 
 
 # ---------------------------------------------------------------------------
