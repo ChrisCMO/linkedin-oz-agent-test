@@ -55,36 +55,68 @@ TARGET_INDUSTRIES = {
 }
 
 
-# Keywords that signal a public company
-PUBLIC_COMPANY_SIGNALS = [
-    "nyse", "nasdaq", "publicly traded", "stock exchange", "ticker symbol",
-    "publicly listed", "otc market", "ipo", "stock ticker", "traded on",
-    "listed on", "tsx", "nzx", "asx",
+# Phrases that strongly indicate a public company.
+# Must be multi-word or unambiguous — no short substrings like "ipo"
+# which match inside normal words (equipo, BIPOC, tripod, iPSC).
+PUBLIC_COMPANY_PHRASES = [
+    "publicly traded",
+    "publicly listed",
+    "publicly held",
+    "public company",
+    "went public",
+    "stock exchange",
+    "stock ticker",
+    "ticker symbol",
+    "otc market",
+    "traded on the",
+    "listed on the",
+    "listed on oslo",
+    "listed on london",
+    "listed on nyse",
+    "listed on nasdaq",
+    "nyse:",
+    "nasdaq:",
 ]
+
+# Single-word signals that need regex word boundary matching
+import re
+PUBLIC_COMPANY_WORDS_RE = re.compile(
+    r'\b(nyse|nasdaq|tsx|nzx|asx)\b', re.IGNORECASE
+)
 
 
 def detect_public_company(company_data: dict) -> bool:
     """Check if company appears to be publicly traded.
 
     Scans LinkedIn description, ownership field, and Apollo data for
-    stock exchange keywords. Returns True if likely public.
+    stock exchange phrases. Uses multi-word phrases to avoid false
+    positives from substring matching (e.g. "ipo" in "equipo").
     """
     texts_to_check = [
         (company_data.get("li_description") or "").lower(),
         (company_data.get("ownership") or "").lower(),
     ]
-    # Also check Apollo short_description
     enrich = company_data.get("enrichment_data") or {}
     apollo = enrich.get("apollo", {})
     texts_to_check.append((apollo.get("short_description") or "").lower())
     texts_to_check.append((apollo.get("seo_description") or "").lower())
 
     combined = " ".join(texts_to_check)
-    for signal in PUBLIC_COMPANY_SIGNALS:
-        if signal in combined:
-            logger.warning("Public company detected: %s (signal: '%s')",
-                          company_data.get("name", "?"), signal)
+
+    # Check multi-word phrases (safe from substring false positives)
+    for phrase in PUBLIC_COMPANY_PHRASES:
+        if phrase in combined:
+            logger.warning("Public company detected: %s (phrase: '%s')",
+                          company_data.get("name", "?"), phrase)
             return True
+
+    # Check single-word signals with word boundaries
+    match = PUBLIC_COMPANY_WORDS_RE.search(combined)
+    if match:
+        logger.warning("Public company detected: %s (word: '%s')",
+                      company_data.get("name", "?"), match.group())
+        return True
+
     return False
 
 
