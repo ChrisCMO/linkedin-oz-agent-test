@@ -11,18 +11,39 @@ This skill orchestrates a company-first prospect sourcing pipeline for VWC CPAs'
 
 The previous approach searched databases for *people* by title, which returned noisy results (wrong geography, defunct companies, stale data). Starting with Google Places gives us **verified, currently-operating businesses** with real addresses and websites — then we find the right person at each company. This dramatically improves list quality.
 
+## Integration with Company Scoring Pipeline
+
+**IMPORTANT:** The company scoring pipeline (`/icp-company-pipeline-revamped`) runs FIRST and creates stub contacts with `status: sourced` in the `prospects` table. These stubs have:
+- `apollo_person_id` — from Apollo free search
+- `zoominfo_contact_id` — from ZoomInfo company ID search
+- `linkedin_url` / `linkedin_slug` — from Apollo or Serper cross-reference (unverified)
+- `company_universe_id` — links to the scored company
+
+**This pipeline should check for existing sourced contacts BEFORE re-discovering:**
+```python
+existing = sb.from("prospects").select("*").eq("company_universe_id", company_id).eq("status", "sourced")
+if existing:
+    # Use existing contacts — skip to validation/enrichment
+    # Use stored apollo_person_id and zoominfo_contact_id for direct lookup
+else:
+    # Run full discovery (fallback)
+```
+
+This saves discovery credits — the company scorer already found the contacts, this pipeline just validates and enriches them.
+
 ## The 10-Step Pipeline
 
 ```
-Step 1:  COMPANY DISCOVERY         → Google Places API (free)
-Step 2:  COMPANY ENRICHMENT        → Apollo org enrich by domain ($1/company) + ZoomInfo contact search (free)
-Step 3:  CONTACT DISCOVERY         → Apollo people search by domain (free) + ZoomInfo cross-match (free)
-Step 3b: ZOOMINFO FINANCE CROSSREF → ZoomInfo zip code search for CFO/Controller at ANY company with no finance contacts
-Step 3c: LINKEDIN X-RAY DISCOVERY  → Google X-ray search for CFO/Controller at companies still missing finance contacts (~$0.01/search)
-Step 4:  PERSON ENRICHMENT         → Apollo person enrich ($1/person) → LinkedIn URL, email, revenue, employees
-Step 4b: STALE DATA VALIDATION     → Google X-ray + Apify profile scrape to verify ZoomInfo-only contacts still at company
+Step 0:  CHECK EXISTING CONTACTS   → Look for 'sourced' stubs from company scoring pipeline (free)
+Step 1:  COMPANY DISCOVERY         → Google Places API (free) — SKIP if company already in companies_universe
+Step 2:  COMPANY ENRICHMENT        → Apollo org enrich by domain ($1/company) — SKIP if already enriched
+Step 3:  CONTACT DISCOVERY         → Apollo people search by domain (free) + ZoomInfo by company ID (free)
+Step 3b: ZOOMINFO FINANCE CROSSREF → ZoomInfo search by companyId (preferred) or name+zip (fallback)
+Step 3c: LINKEDIN X-RAY DISCOVERY  → Serper.dev X-ray search (default, 7x faster) or Apify SERP (fallback)
+Step 4:  PERSON ENRICHMENT         → Apollo person enrich ($1/person) — use stored apollo_person_id when available
+Step 4b: STALE DATA VALIDATION     → Apify profile scrape to verify contacts still at company
 Step 5:  AI SCORING                → 0-100 score with company-location-aware reasoning (GPT-5.4)
-Step 6:  LINKEDIN VALIDATION       → Profile scraper (role verification) + Activity Index (activity) + Company page scraper
+Step 6:  LINKEDIN VALIDATION       → Profile scraper (role verification) + Activity Index (activity)
 Step 7:  CONNECTION NOTES          → Adrienne + Melinda versions (≤200 chars)
 Step 8:  MESSAGE SEQUENCES         → 3-message follow-up per prospect
 ```

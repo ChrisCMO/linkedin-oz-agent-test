@@ -16,28 +16,103 @@ After the April 4, 2026 client review, Chad and the VWC partners identified gaps
 3. **Inactive contacts are a waste.** Michael Turner (1 connection, no activity) shouldn't be messaged.
 4. **Existing clients must be excluded.** Anthony's Homeport is a VWC client for 401K — can't contact them.
 
+## Edge Cases & Lessons Learned (April 8-11, 2026)
+
+Critical discoveries from scoring 2,000+ companies:
+
+### GPT Score Mismatch
+GPT's final score doesn't always match its own dimension breakdown sum. Example: A-America got `score: 78` but breakdown sums to 84. **Fix:** Post-processing recalculates score from breakdown dimensions. GPT provides reasoning text, we compute the number.
+
+### Benefit of the Doubt Rule
+Companies scoring 75-79 with ANY tier contacts (CFO, CEO, Owner, Accounting Manager) get upgraded to PROCEED. Per Chad: "having a financial person is a strong signal." This caught 80+ companies that GPT underscored.
+
+### Scoring Guardrails (`lib/score_guardrails.py`)
+Two-layer correction system:
+1. **Rule-based overrides** (instant, no API): CFO found → org_complexity ≥9. Seattle metro → geography=15. Missing revenue → 7/10. <25 LinkedIn employees + contacts → company_size ≥14 (Carillon pattern). Unknown ownership → 12.
+2. **AI reviewer** (GPT call, only for borderline 70-79 without contacts): Compares against VWC benchmark companies.
+
+### Hard Exclusion Guardrails
+- **Revenue ceiling:** >$150M = HARD EXCLUDE (caught 16 companies including Darigold at $2.3B that GPT missed)
+- **Employee ceiling:** >10,000 = HARD EXCLUDE
+- **Public company detection:** Scans descriptions for "publicly traded", "NYSE", "NASDAQ" with word-boundary matching. Caught Getty Images, Columbia Sportswear. **Warning:** substring "ipo" matches inside normal words (equipo, BIPOC, tripod) — use phrase matching only.
+- **Competitor CPA firms:** Exact-name matching for Moss Adams, BDO, Deloitte, KPMG, etc. These are VWC's competition, NOT targets. Different from Form 5500 boost which flags their CLIENTS as targets.
+
+### Form 5500 Big-Firm Signal
+Companies audited by Big Four/large CPA firms get a POSITIVE scoring boost (0-8 pts). Data from `data/form5500_big_firm_clients.csv` (5,042 companies). Per Chad: these companies "feel like a small fish in a big pond" — prime targets for VWC.
+
+### X-ray False Positives
+- Generic company names (e.g., "CJ Construction") produced match term `["construction"]` which matched anyone in construction. **Fix:** Keep short words when only word is an industry term → `["cj construction"]`.
+- Location check: if match term is generic, require PNW location on the profile.
+- Gene Boyer III (CFO at AR Construction, Pittsburgh) was incorrectly matched to CJ Construction (Bellevue). Profile verification caught it.
+
+### ZoomInfo Company ID Search
+ZoomInfo batch data includes `zi_id` (company ID). Searching contacts by `companyId` instead of name+zip finds **3x more contacts** with zero false positives. The original name+zip search missed 439 contacts across 164 companies in batch_01 alone.
+
+### Contact Discovery Cross-Referencing
+For ZoomInfo contacts (have zi_contact_id but no LinkedIn URL):
+1. Apollo cross-match (free) → get apollo_id + linkedin_url
+2. If Apollo has no match → Serper google search → get linkedin_url (unverified)
+3. Prospect pipeline (Stage 2) validates the LinkedIn URLs later
+
+### Serper.dev vs Apify SERP
+Serper.dev is 7.6x faster than Apify SERP actor (~5s vs ~40s per company). Nearly identical result quality (90% overlap). Serper is now the default SERP provider. Toggle via `SERP_PROVIDER` env var ("serper" or "apify").
+
+### Checkpoint/Resume
+Pipeline crashes from internet drops don't lose progress. Smart recovery:
+- `enriching` companies → reset to `raw` (re-enrich)
+- `scoring` companies WITH score → promote to `scored` (saves GPT credits)
+- `scoring` companies WITHOUT score → reset to `enriched` (re-score only)
+- X-ray rescue skips companies with existing `xray_rescue` data
+- Contact discovery skips companies with existing `contact_discovery` data
+
+### Promoting Companies
+When promoting PROCEED companies to `companies_universe`:
+- Creates stub prospect records from discovered contacts (all tiers)
+- Preserves apollo_id, zoominfo_contact_id, linkedin_slug
+- Links ALL existing prospects to `company_universe_id` (not just newly created ones)
+- "Promote Selected" button respects checkbox selection (not bulk all)
+
+### Dashboard Performance
+Exclude `enrichment_data` and `source_data` JSONB columns from list queries. Payload drops from ~144KB to ~17KB for 50 rows. Company detail page queries by `company_universe_id` first, falls back to `company_name` (avoids PostgREST comma parsing bug in `.or()`).
+
 ## Pipeline Sequencing — How v2 Fits With Prospect Pipeline
 
 The v2 company pipeline and the `/icp-prospect-pipeline` are **separate but sequenced**:
 
 ```
-Phase 1: ALL RAW COMPANIES (cheap, ~$1/company + free searches)
-  ├─ LinkedIn company page scrape + HQ/branch detection
-  ├─ Apollo org enrichment ($1/company)
-  ├─ Finance title scan — Tier 1: Apollo search (free)
-  ├─ Revenue mismatch detection (free)
+Phase 0: LINKEDIN SCRAPE (batch, ~$0.002/company)
+  ├─ Apify company page scraper for followers, employees, description
+  ├─ HQ vs branch location detection
+  └─ Domain extraction from LinkedIn website field
+
+Phase 1: ENRICHMENT + SCORING (cheap, ~$1/company + free searches)
   ├─ Client blacklist check (free)
-  ├─ V2 scoring (all 7 dimensions including organizational_complexity)
-  └─ Output: PROCEED (80+) / REVIEW (60-79) / SKIP (<60) / HARD EXCLUDE (0)
+  ├─ Pre-filter: skip companies with no domain AND no LinkedIn (→ "incomplete")
+  ├─ Apollo org enrichment ($1/company)
+  ├─ Finance title scan — Tier 1+3: Apollo search (free, 14 titles)
+  ├─ PSBJ cross-reference + Form 5500 big-firm signal (free)
+  ├─ Revenue mismatch detection (free)
+  ├─ V2 scoring (8 dimensions including organizational_complexity + big_firm_signal)
+  ├─ Guardrails: rule overrides + score recalculation + hard exclusion checks
+  └─ Output: PROCEED (80+ or 75-79 with contacts) / REVIEW / SKIP / HARD EXCLUDE
 
-Phase 2: REVIEW COMPANIES ONLY — X-RAY RESCUE (cheap, ~$0.04/company)
-  ├─ Finance title scan — Tier 2: Google X-ray search (domain-first, ~$0.04)
-  ├─ Finance title scan — Tier 3: Profile scrape verification (~$0.003/contact)
+Phase 2: X-RAY RESCUE for REVIEW companies (~$0.01/company via Serper)
+  ├─ Serper.dev X-ray search — ALL 3 tiers (Tier 1+2+3)
+  ├─ Apify profile scrape verification (~$0.003/contact)
   ├─ Rescore with new organizational_complexity data
-  └─ Output: some REVIEW companies cross 80 → become PROCEED
+  └─ Output: some REVIEW companies cross threshold → become PROCEED
 
-Phase 3: ALL PROCEED COMPANIES → /icp-prospect-pipeline (expensive, ~$2.10/person)
-  ├─ Full contact discovery + enrichment
+Phase 3: CONTACT DISCOVERY for ALL SCORED companies (free + ~$0.001/Serper query)
+  ├─ Apollo free people search (all tiers, by domain)
+  ├─ ZoomInfo free contact search (by company ID when available, by name+zip fallback)
+  ├─ Serper X-ray discovery (if Apollo+ZoomInfo found no Tier 1)
+  ├─ Cross-reference: ZoomInfo contacts → Apollo (free) → Serper for LinkedIn URLs
+  ├─ All contacts stored as stubs (status: sourced) with apollo_id, zoominfo_contact_id, linkedin_slug
+  ├─ Audit logged to discovery_log table
+  └─ Output: stub prospects ready for Stage 2 enrichment
+
+Phase 4: ALL PROCEED COMPANIES → /icp-prospect-pipeline (expensive, ~$2.10/person)
+  ├─ Full contact validation + enrichment (uses stored IDs to skip re-discovery)
   ├─ LinkedIn validation + activity scoring
   ├─ Contact-level ICP scoring
   ├─ Connection notes + message sequences
@@ -384,14 +459,22 @@ Finance Contact 5 Name, Finance Contact 5 Title, Finance Contact 5 LinkedIn URL
 | File | What |
 |------|------|
 | `lib/title_tiers.py` | Centralized 3-tier title config — single source of truth for all title lists |
-| `lib/apify.py` | Apify actor runner with retry logic, adaptive timeouts, timing logs |
-| `lib/xray.py` | X-ray discovery with `max_tier` param (1=finance only, 3=all tiers) |
-| `skills/company_scorer.py` | Company scoring pipeline — Tier 1 finance scan + branch detection |
-| `skills/prospect_enricher.py` | Prospect enrichment — full tiered search (max_tier=3) for outreach targets |
-| `mvp/backend/services/scoring.py` | `score_companies_v2()`, `classify_contact_activity()`, `detect_revenue_mismatch()` |
-| `scripts/benchmark_scorer.py` | Benchmark utility — import CSV, run scorer, report timing |
-| `data/blacklist.csv` | Client exclusion list |
-| `docs/deliverables/week2/universe/private/psbj_family_owned_wa_2026_86.csv` | PSBJ family-owned companies list |
+| `lib/apify.py` | Apify actor runner + `build_company_match_terms()` with industry word protection |
+| `lib/xray.py` | X-ray discovery with Serper (default) or Apify SERP. `max_tier` param. Profile verification. |
+| `lib/serper.py` | Serper.dev Google SERP API adapter — 7x faster than Apify SERP |
+| `lib/contact_discovery.py` | Shared discovery module: Apollo + ZoomInfo + X-ray + cross-referencing |
+| `lib/score_guardrails.py` | Rule overrides + AI reviewer + public company detection + revenue/employee ceilings |
+| `skills/company_scorer.py` | Company scoring pipeline — all phases including contact discovery |
+| `skills/prospect_enricher.py` | Prospect enrichment — full tiered search for outreach targets |
+| `mvp/backend/services/scoring.py` | `score_companies_v2()` with post-processing score recalculation |
+| `scripts/export_pipeline_data.py` | CSV backup of all pipeline tables (auto-runs after scoring) |
+| `scripts/import_pipeline_data.py` | Restore CSVs into new Supabase project |
+| `scripts/compare_serp_providers.py` | Benchmark Serper vs Apify SERP |
+| `data/blacklist.csv` | Client exclusion list (exact match) |
+| `data/competitors.csv` | Competitor CPA firms (empty — exclusion now in guardrails) |
+| `data/form5500_big_firm_clients.csv` | 5,042 companies audited by Big Four/large firms (positive signal) |
+| `data/backups/` | Timestamped CSV backups (auto-generated, gitignored) |
+| `db/migrate_discovery_log.sql` | Audit table for contact discovery API calls |
 
 ## Running the Pipeline
 
@@ -431,7 +514,7 @@ Finance Contact 5 Name, Finance Contact 5 Title, Finance Contact 5 LinkedIn URL
 | Jumbo Foods | 79 | — | (none in Apollo) | Needs X-ray |
 | Pacific Tool | 79 | — | (none in Apollo) | Needs X-ray |
 
-### Known X-ray accuracy issues (fixed April 7):
+### Known X-ray accuracy issues (fixed April 7-10):
 
 | Issue | Example | Fix |
 |-------|---------|-----|
@@ -439,3 +522,49 @@ Finance Contact 5 Name, Finance Contact 5 Title, Finance Contact 5 LinkedIn URL
 | Short company names | "Field" matched Field Aerospace | `_build_company_match_terms()` extracts distinctive words |
 | Junk domains from Google Maps | Company "website" was facebook.com or instagram.com | `JUNK_DOMAINS` filter in `extract_domain()` |
 | False positive contacts | X-ray returned CFOs at wrong companies | Tier 3 profile scrape verifies `currentPosition.companyName` |
+| Generic industry words | "CJ Construction" → match term "construction" matched anyone in construction | Keep short words when only remaining word is generic industry term |
+| Wrong location | Gene Boyer III at AR Construction (Pittsburgh) matched CJ Construction (Bellevue) | Location check for generic matches — require PNW |
+| Substring "ipo" false positives | "equipo", "BIPOC", "tripod" matched public company check | Use phrase matching ("publicly traded") not substring |
+
+## Running the Pipeline
+
+### Via Claude Code (local)
+```bash
+# Score raw companies in Supabase (processes raw → scored)
+python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --limit 100
+
+# Score specific companies by ID
+python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --company-ids UUID1,UUID2
+
+# Export backup
+python3 scripts/export_pipeline_data.py --tenant-id 00000000-0000-0000-0000-000000000001
+```
+
+### Via Oz Cloud Agent
+```bash
+oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt 'Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --limit 100'
+```
+
+### Via REST API (Dashboard trigger)
+```bash
+curl -X POST https://app.warp.dev/api/v1/agent/run \
+  -H "Authorization: Bearer $WARP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --limit 100",
+    "config": { "environment_id": "iR37ujTjeo7Ne6pZ9vHRcI" }
+  }'
+```
+
+### Required Secrets (Oz environment)
+```
+SUPABASE_URL, SUPABASE_SECRET_KEY, APOLLO_API_KEY, OPENAI_API_KEY,
+APIFY_API_KEY, SERPER_API_KEY, ZOOMINFO_USERNAME, ZOOMINFO_PASSWORD,
+MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET, MICROSOFT_TENANT
+```
+
+### Pipeline is Resumable
+If a run crashes (timeout, network), just re-run the same command. It picks up where it left off:
+- Already-scored companies are skipped
+- Stuck `enriching`/`scoring` companies get smart-recovered
+- X-ray rescue and contact discovery skip already-processed companies
