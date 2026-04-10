@@ -261,8 +261,8 @@ This is a company-level score only.
 Return a JSON object with a "companies" key containing an array where each element has:
 - "company_id": pass through exactly
 - "company_name": pass through exactly
-- "score": integer 0-100
-- "breakdown": object with dimension scores
+- "score": integer 0-100 — MUST equal the exact sum of all dimension scores in "breakdown". Do not apply any subjective adjustment. Sum your dimensions and use that number.
+- "breakdown": object with dimension scores (each dimension as an integer)
 - "reasoning": 1-2 sentence explanation
 - "calibration_notes": any insights about scoring
 
@@ -435,6 +435,24 @@ def score_companies_v2(companies: list[dict], icp_config: dict | None = None, mo
         scores = [parsed]
     else:
         scores = []
+
+    # Post-processing: recalculate score from breakdown dimensions.
+    # GPT sometimes gives a subjective total that doesn't match its own breakdown.
+    for s in scores:
+        breakdown = s.get("breakdown", {})
+        if breakdown:
+            calculated = 0
+            for v in breakdown.values():
+                try:
+                    calculated += int(v)
+                except (ValueError, TypeError):
+                    pass
+            calculated = min(calculated, 100)
+            gpt_score = s.get("score", 0)
+            if calculated != gpt_score and calculated > 0:
+                logger.warning("Score mismatch for %s: GPT=%d, calculated=%d — using calculated",
+                               s.get("company_name", "?"), gpt_score, calculated)
+                s["score"] = calculated
 
     logger.info("Company scoring v2 complete: %d scores returned", len(scores))
     return scores
