@@ -784,8 +784,21 @@ def process_companies(sb, companies: list[dict], icp_config: dict) -> tuple[int,
                     continue
 
                 score = result.get("score", 0)
+
+                # Benefit of the doubt: companies scoring 75-79 with any tier
+                # contacts found get upgraded to PROCEED.
+                # Per Chad: having a financial person or executive is a strong signal.
+                has_any_contact = False
+                enrich = company.get("enrichment_data") or {}
+                finance_scan = enrich.get("finance_scan", {})
+                if finance_scan.get("contacts"):
+                    has_any_contact = True
+
                 if score >= 80:
                     action = "PROCEED"
+                elif score >= 75 and has_any_contact:
+                    action = "PROCEED"
+                    logger.info("Benefit of doubt: %s score %d → PROCEED (has tier contacts)", name, score)
                 elif score >= 60:
                     action = "REVIEW"
                 elif score == 0:
