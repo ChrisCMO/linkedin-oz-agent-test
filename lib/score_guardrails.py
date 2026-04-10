@@ -55,6 +55,39 @@ TARGET_INDUSTRIES = {
 }
 
 
+# Keywords that signal a public company
+PUBLIC_COMPANY_SIGNALS = [
+    "nyse", "nasdaq", "publicly traded", "stock exchange", "ticker symbol",
+    "publicly listed", "otc market", "ipo", "stock ticker", "traded on",
+    "listed on", "tsx", "nzx", "asx",
+]
+
+
+def detect_public_company(company_data: dict) -> bool:
+    """Check if company appears to be publicly traded.
+
+    Scans LinkedIn description, ownership field, and Apollo data for
+    stock exchange keywords. Returns True if likely public.
+    """
+    texts_to_check = [
+        (company_data.get("li_description") or "").lower(),
+        (company_data.get("ownership") or "").lower(),
+    ]
+    # Also check Apollo short_description
+    enrich = company_data.get("enrichment_data") or {}
+    apollo = enrich.get("apollo", {})
+    texts_to_check.append((apollo.get("short_description") or "").lower())
+    texts_to_check.append((apollo.get("seo_description") or "").lower())
+
+    combined = " ".join(texts_to_check)
+    for signal in PUBLIC_COMPANY_SIGNALS:
+        if signal in combined:
+            logger.warning("Public company detected: %s (signal: '%s')",
+                          company_data.get("name", "?"), signal)
+            return True
+    return False
+
+
 def apply_rule_overrides(breakdown: dict, company_data: dict, finance_scan: dict) -> dict:
     """Apply deterministic rule-based corrections to GPT dimension scores.
 
@@ -219,6 +252,10 @@ def apply_guardrails(score: int, breakdown: dict, company_data: dict,
 
     Returns (corrected_score, corrected_breakdown, action).
     """
+    # Step 0: Public company check — VWC doesn't want public companies
+    if detect_public_company(company_data):
+        return 0, breakdown, "HARD EXCLUDE"
+
     # Step 1: Rule-based overrides
     corrected = apply_rule_overrides(breakdown, company_data, finance_scan)
     corrected_score = recalculate_score(corrected)
