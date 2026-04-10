@@ -285,6 +285,25 @@ def apply_guardrails(score: int, breakdown: dict, company_data: dict,
     Returns (corrected_score, corrected_breakdown, action).
     """
     # Step 0: Hard exclusion checks
+
+    # Competitor CPA/accounting firms — these ARE the competition, not targets
+    # (Different from Form 5500 boost which flags their CLIENTS as targets)
+    COMPETITOR_FIRMS = {
+        "moss adams", "bdo", "bdo usa", "sweeney conrad", "baker tilly",
+        "baker tilly us", "clark nuber", "peterson sullivan", "deloitte",
+        "pwc", "pricewaterhousecoopers", "ey", "ernst & young", "ernst and young",
+        "kpmg", "grant thornton", "rsm", "crowe", "plante moran",
+        "cliftonlarsonallen", "cla", "wipfli", "eide bailly",
+    }
+    company_name_lower = (company_data.get("name") or "").strip().lower()
+    # Remove common suffixes for matching
+    for suffix in [", llp", " llp", ", llc", " llc", ", inc", " inc",
+                   ", p.c.", " p.c.", ", p.s.", " p.s."]:
+        company_name_lower = company_name_lower.removesuffix(suffix)
+    if company_name_lower in COMPETITOR_FIRMS:
+        logger.warning("Competitor CPA firm detected: %s", company_data.get("name", "?"))
+        return 0, breakdown, "HARD EXCLUDE"
+
     if detect_public_company(company_data):
         return 0, breakdown, "HARD EXCLUDE"
 
