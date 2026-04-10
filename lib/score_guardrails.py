@@ -284,8 +284,35 @@ def apply_guardrails(score: int, breakdown: dict, company_data: dict,
 
     Returns (corrected_score, corrected_breakdown, action).
     """
-    # Step 0: Public company check — VWC doesn't want public companies
+    # Step 0: Hard exclusion checks
     if detect_public_company(company_data):
+        return 0, breakdown, "HARD EXCLUDE"
+
+    # Revenue ceiling: >$150M = too large for VWC
+    revenue_str = str(company_data.get("revenue") or "")
+    if revenue_str:
+        import re
+        rev_match = re.search(r'([\d,.]+)\s*[Mm]', revenue_str)
+        if rev_match:
+            rev_m = float(rev_match.group(1).replace(',', ''))
+            if rev_m > 150:
+                logger.warning("Revenue ceiling exceeded: %s ($%.0fM > $150M)",
+                              company_data.get("name", "?"), rev_m)
+                return 0, breakdown, "HARD EXCLUDE"
+        rev_match_b = re.search(r'([\d,.]+)\s*[Bb]', revenue_str)
+        if rev_match_b:
+            logger.warning("Revenue in billions: %s (%s)",
+                          company_data.get("name", "?"), revenue_str)
+            return 0, breakdown, "HARD EXCLUDE"
+
+    # Employee ceiling: >10,000 = too large
+    employees = company_data.get("employees") or 0
+    enrich_data = company_data.get("enrichment_data") or {}
+    apollo_emp = (enrich_data.get("apollo") or {}).get("employees") or 0
+    max_emp = max(employees, apollo_emp)
+    if max_emp > 10000:
+        logger.warning("Employee ceiling exceeded: %s (%d > 10,000)",
+                      company_data.get("name", "?"), max_emp)
         return 0, breakdown, "HARD EXCLUDE"
 
     # Step 1: Rule-based overrides
