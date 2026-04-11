@@ -58,6 +58,7 @@ _TIER_MAP = [
     ("finance director", 1),
     ("financial controller", 1),
     # Tier 2
+    ("chief executive", 2),
     ("managing director", 2),
     ("executive director", 2),
     ("president", 2),
