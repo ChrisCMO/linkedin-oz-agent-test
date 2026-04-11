@@ -314,6 +314,24 @@ def linkedin_scrape_batch(sb, companies: list[dict]):
             "is_branch": is_branch,
             "scraped_at": datetime.now(timezone.utc).isoformat(),
         }
+        # Store FULL raw Apify response — never discard data
+        enrichment_data["raw_linkedin_scrape"] = {
+            **{k: v for k, v in li.items() if k not in ("logos", "backgroundCovers", "similarOrganizations", "profilePicture")},  # skip large image arrays
+            "extracted_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Check employeeCountRange for hard exclude
+        emp_range = li.get("employeeCountRange") or {}
+        range_start = emp_range.get("start", 0) if isinstance(emp_range, dict) else 0
+        if range_start > 10000:
+            logger.warning("  %s: employeeCountRange %d+ (associated members: %s) — flagging for hard exclude",
+                          c.get("name", "?"), range_start, emp)
+            updates["pipeline_status"] = "scored"
+            updates["pipeline_action"] = "HARD EXCLUDE"
+            updates["icp_score"] = 0
+            updates["reasoning"] = f"Company size {range_start:,}+ employees (LinkedIn employeeCountRange). Only {emp} associated members."
+            enrichment_data["linkedin_scrape"]["employeeCountRange"] = emp_range
+
         updates["enrichment_data"] = enrichment_data
 
         if updates:
@@ -350,6 +368,7 @@ def apollo_finance_scan(apollo: ApolloClient, domain: str) -> list[dict]:
                 "headline": p.get("headline", ""),
                 "city": p.get("city", ""),
                 "state": p.get("state", ""),
+                "_raw": p,  # Full raw Apollo person record
             })
         return contacts
     except Exception as e:
@@ -436,6 +455,8 @@ def enrich_via_apollo(domain: str) -> dict | None:
                 "seo_description": data.get("seo_description"),
                 "ownership_type": data.get("ownership_type"),
                 "apollo_id": data.get("id"),
+                # Full raw response for future reference
+                "_raw_response": {**data, "extracted_at": datetime.now(timezone.utc).isoformat()},
             }
         elif resp.status_code == 402:
             logger.error("Apollo credits exhausted — cannot enrich")
@@ -466,7 +487,11 @@ def merge_enrichment(sb, company: dict, apollo_data: dict):
     # Store employee count from Apollo in enrichment_data (raw_companies has
     # a single 'employees' integer column — don't overwrite LinkedIn count)
     enrichment_data = company.get("enrichment_data") or {}
-    enrichment_data["apollo"] = apollo_data
+    # Store cherry-picked fields for quick access
+    enrichment_data["apollo"] = {k: v for k, v in apollo_data.items() if k != "_raw_response"}
+    # Store full raw response for future reference
+    if apollo_data.get("_raw_response"):
+        enrichment_data["raw_apollo_enrich"] = apollo_data["_raw_response"]
     updates["enrichment_data"] = enrichment_data
     updates["pipeline_status"] = "enriched"
     updates["enriched_at"] = datetime.now(timezone.utc).isoformat()
@@ -559,14 +584,21 @@ def preprocess_company(company: dict, apollo: ApolloClient,
 
     # --- Store finance data in enrichment_data for DB persistence ---
     enrichment_data = company.get("enrichment_data") or {}
+    # Store contacts with raw data stripped for quick access
+    contacts_clean = [{k: v for k, v in c.items() if k != "_raw"} for c in finance_contacts]
     enrichment_data["finance_scan"] = {
-        "contacts": finance_contacts,
-        "best_contact": best_finance,
+        "contacts": contacts_clean,
+        "best_contact": {k: v for k, v in best_finance.items() if k != "_raw"} if best_finance else None,
         "has_cfo": has_cfo,
         "has_controller": has_controller,
         "has_accounting_manager": has_accounting_mgr,
         "titles_found": finance_titles_found,
         "scanned_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Store full raw Apollo people search response
+    enrichment_data["raw_apollo_finance_scan"] = {
+        "contacts": [c.get("_raw", c) for c in finance_contacts],
+        "extracted_at": datetime.now(timezone.utc).isoformat(),
     }
     if match:
         enrichment_data["psbj"] = match
