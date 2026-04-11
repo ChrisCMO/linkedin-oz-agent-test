@@ -96,6 +96,7 @@ def discover_contacts_apollo(apollo: ApolloClient, domain: str) -> list[dict]:
                 "apollo_id": p.get("id", ""),
                 "email": p.get("email", ""),
                 "source": "apollo_search",
+                "_raw": p,  # Full raw Apollo person record
             })
         return contacts
     except Exception as e:
@@ -148,6 +149,7 @@ def discover_contacts_zoominfo(company_name: str, location: str) -> list[dict]:
                     "apollo_id": "",
                     "zoominfo_id": str(c.get("id", "")),
                     "source": "import",
+                    "_raw": c,  # Full raw ZoomInfo contact record
                 })
         return contacts
     except Exception as e:
@@ -283,6 +285,11 @@ def enrich_person(apollo: ApolloClient, contact: dict) -> dict:
             contact["company_industry"] = org.get("industry", "")
             contact["company_employees"] = org.get("estimated_num_employees")
             contact["company_revenue"] = org.get("annual_revenue_printed", "")
+            # Full raw response for future reference
+            contact["_raw_apollo_enrich"] = {
+                **person,
+                "extracted_at": datetime.now(timezone.utc).isoformat(),
+            }
     except Exception as e:
         logger.warning("Apollo person enrich failed for %s: %s", contact.get("name", "?"), e)
 
@@ -308,6 +315,24 @@ def _apply_profile_data(contact: dict, profile: dict):
             contact["title"] = current_title
     else:
         contact["role_verified"] = False
+
+    # Store full raw profile scrape — never discard data
+    contact["linkedin_profile_data"] = {
+        "firstName": profile.get("firstName"),
+        "lastName": profile.get("lastName"),
+        "headline": profile.get("headline"),
+        "currentPosition": current_positions,
+        "experience": (profile.get("experience") or [])[:10],
+        "connectionsCount": profile.get("connectionsCount"),
+        "followerCount": profile.get("followerCount"),
+        "location": profile.get("location"),
+        "skills": [s.get("name") for s in (profile.get("skills") or [])[:10]],
+        "photo": profile.get("photo"),
+        "about": (profile.get("about") or "")[:500],
+        "education": (profile.get("education") or [])[:5],
+        "verified": contact.get("role_verified", False),
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _apply_activity_data(contact: dict, activity_data: dict):
@@ -482,6 +507,8 @@ def upsert_prospect(sb, tenant_id: str, campaign_id: str, company: dict, contact
         "partner_messages": contact.get("partner_messages", ""),
         "data_source": contact.get("source", ""),
         "contact_batch_name": f"prospect_enrichment_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+        "linkedin_profile_data": contact.get("linkedin_profile_data"),
+        "raw_apollo_data": contact.get("_raw_apollo_enrich"),
     }
 
     # Remove None values to avoid overwriting existing data
