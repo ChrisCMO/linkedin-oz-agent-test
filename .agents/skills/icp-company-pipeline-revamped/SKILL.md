@@ -514,7 +514,7 @@ Finance Contact 5 Name, Finance Contact 5 Title, Finance Contact 5 LinkedIn URL
 | Jumbo Foods | 79 | — | (none in Apollo) | Needs X-ray |
 | Pacific Tool | 79 | — | (none in Apollo) | Needs X-ray |
 
-### Known X-ray accuracy issues (fixed April 7-10):
+### Known X-ray accuracy issues (fixed April 7):
 
 | Issue | Example | Fix |
 |-------|---------|-----|
@@ -522,49 +522,3 @@ Finance Contact 5 Name, Finance Contact 5 Title, Finance Contact 5 LinkedIn URL
 | Short company names | "Field" matched Field Aerospace | `_build_company_match_terms()` extracts distinctive words |
 | Junk domains from Google Maps | Company "website" was facebook.com or instagram.com | `JUNK_DOMAINS` filter in `extract_domain()` |
 | False positive contacts | X-ray returned CFOs at wrong companies | Tier 3 profile scrape verifies `currentPosition.companyName` |
-| Generic industry words | "CJ Construction" → match term "construction" matched anyone in construction | Keep short words when only remaining word is generic industry term |
-| Wrong location | Gene Boyer III at AR Construction (Pittsburgh) matched CJ Construction (Bellevue) | Location check for generic matches — require PNW |
-| Substring "ipo" false positives | "equipo", "BIPOC", "tripod" matched public company check | Use phrase matching ("publicly traded") not substring |
-
-## Running the Pipeline
-
-### Via Claude Code (local)
-```bash
-# Score raw companies in Supabase (processes raw → scored)
-python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --limit 100
-
-# Score specific companies by ID
-python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --company-ids UUID1,UUID2
-
-# Export backup
-python3 scripts/export_pipeline_data.py --tenant-id 00000000-0000-0000-0000-000000000001
-```
-
-### Via Oz Cloud Agent
-```bash
-oz agent run-cloud -e iR37ujTjeo7Ne6pZ9vHRcI --prompt 'Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --limit 100'
-```
-
-### Via REST API (Dashboard trigger)
-```bash
-curl -X POST https://app.warp.dev/api/v1/agent/run \
-  -H "Authorization: Bearer $WARP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Run: cd /workspace/linkedin-oz-agent-test && python3 -m skills.company_scorer --tenant-id 00000000-0000-0000-0000-000000000001 --limit 100",
-    "config": { "environment_id": "iR37ujTjeo7Ne6pZ9vHRcI" }
-  }'
-```
-
-### Required Secrets (Oz environment)
-```
-SUPABASE_URL, SUPABASE_SECRET_KEY, APOLLO_API_KEY, OPENAI_API_KEY,
-APIFY_API_KEY, SERPER_API_KEY, ZOOMINFO_USERNAME, ZOOMINFO_PASSWORD,
-MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET, MICROSOFT_TENANT
-```
-
-### Pipeline is Resumable
-If a run crashes (timeout, network), just re-run the same command. It picks up where it left off:
-- Already-scored companies are skipped
-- Stuck `enriching`/`scoring` companies get smart-recovered
-- X-ray rescue and contact discovery skip already-processed companies
