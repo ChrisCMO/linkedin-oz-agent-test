@@ -486,7 +486,9 @@ def merge_enrichment(sb, company: dict, apollo_data: dict):
 
     # Store employee count from Apollo in enrichment_data (raw_companies has
     # a single 'employees' integer column — don't overwrite LinkedIn count)
-    enrichment_data = company.get("enrichment_data") or {}
+    # Reload enrichment_data from DB to avoid overwriting other phases' data
+    fresh = sb.table(TABLE).select("enrichment_data").eq("id", company["id"]).single().execute()
+    enrichment_data = (fresh.data.get("enrichment_data") if fresh.data else None) or {}
     # Store cherry-picked fields for quick access
     enrichment_data["apollo"] = {k: v for k, v in apollo_data.items() if k != "_raw_response"}
     # Store full raw response for future reference
@@ -583,7 +585,11 @@ def preprocess_company(company: dict, apollo: ApolloClient,
             ownership = f"Private ({match['ownership_type']}, confirmed via PSBJ)"
 
     # --- Store finance data in enrichment_data for DB persistence ---
-    enrichment_data = company.get("enrichment_data") or {}
+    # Reload from DB to avoid overwriting LinkedIn scrape + Apollo data
+    from db.connect import get_supabase as _get_sb
+    _sb = _get_sb()
+    _fresh = _sb.table(TABLE).select("enrichment_data").eq("id", company.get("id", "")).single().execute()
+    enrichment_data = (_fresh.data.get("enrichment_data") if _fresh.data else None) or {}
     # Store contacts with raw data stripped for quick access
     contacts_clean = [{k: v for k, v in c.items() if k != "_raw"} for c in finance_contacts]
     enrichment_data["finance_scan"] = {
