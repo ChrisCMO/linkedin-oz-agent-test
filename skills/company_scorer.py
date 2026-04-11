@@ -1229,39 +1229,102 @@ def run(tenant_id: str, batch_id: str | None = None, limit: int = 100,
     print(f"\nScoring done: {scored} scored, {errors} errors, {skipped} skipped "
           f"out of {len(companies)} companies")
 
-    # Phase 5: Full contact discovery for all scored companies
-    scored_companies = (
-        sb.table(TABLE)
-        .select("id, name, domain, location, linkedin_url, icp_score, pipeline_action, enrichment_data")
-        .eq("tenant_id", tenant_id)
-        .eq("pipeline_status", "scored")
-        .not_.is_("pipeline_action", "null")
-        .order("icp_score", desc=True)
-    )
-    if batch_id:
-        scored_companies = scored_companies.eq("batch_id", batch_id)
-    if company_ids:
-        scored_companies = scored_companies.in_("id", company_ids)
-    else:
-        scored_companies = scored_companies.limit(limit)
+    # Phase 5: Full contact discovery for companies processed in THIS run
+    processed_ids = [c["id"] for c in companies]
+    scored_data = []
+    for cid in processed_ids:
+        result = sb.table(TABLE).select(
+            "id, name, domain, location, linkedin_url, icp_score, pipeline_action, enrichment_data, source_data"
+        ).eq("id", cid).eq("pipeline_status", "scored").single().execute()
+        if result.data:
+            scored_data.append(result.data)
 
-    scored_data = scored_companies.execute().data or []
-
-    # Filter to companies that haven't had discovery run yet
+    # Filter: skip already-discovered AND hard exclude/skip companies
     needs_discovery = []
     for c in scored_data:
         enrich = c.get("enrichment_data") or {}
-        if "contact_discovery" not in enrich:
+        action = c.get("pipeline_action", "")
+        if "contact_discovery" not in enrich and action not in ("HARD EXCLUDE", "SKIP"):
             needs_discovery.append(c)
 
     if needs_discovery:
-        print(f"\n--- Phase 5: Contact discovery for {len(needs_discovery)} scored companies ---")
-        discovery_contacts, discovery_errors = run_contact_discovery(
-            sb, needs_discovery, tenant_id
-        )
-        print(f"Discovery done: {discovery_contacts} contacts found, {discovery_errors} errors")
+        from lib.integrated_discovery import discover_contacts_integrated
+
+        # ZoomInfo auth (once per batch)
+        zi_token = ""
+        try:
+            zi_user = os.environ.get("ZOOMINFO_USERNAME", "")
+            zi_pass = os.environ.get("ZOOMINFO_PASSWORD", "")
+            if zi_user and zi_pass:
+                zi_auth = requests.post("https://api.zoominfo.com/authenticate",
+                    json={"username": zi_user, "password": zi_pass}, timeout=15)
+                zi_token = zi_auth.json().get("jwt", "")
+        except:
+            pass
+
+        # Serper balance before
+        serper_key = os.environ.get("SERPER_API_KEY", "")
+        serper_before = 0
+        try:
+            if serper_key:
+                serper_before = requests.get("https://google.serper.dev/account",
+                    headers={"X-API-KEY": serper_key}).json().get("balance", 0)
+                print(f"\nSerper balance BEFORE: {serper_before}")
+        except:
+            pass
+
+        print(f"\n--- Phase 5: Integrated discovery for {len(needs_discovery)} companies ---")
+        apollo_disc = ApolloClient()
+        total_contacts = 0
+        total_serper = 0
+        total_errors = 0
+
+        for i, company in enumerate(needs_discovery):
+            print(f"  [{i+1}/{len(needs_discovery)}] {company.get('name', '?')} "
+                  f"(score: {company.get('icp_score', '?')})...", end=" ", flush=True)
+
+            try:
+                result = discover_contacts_integrated(
+                    sb, apollo_disc, company, tenant_id, zi_token=zi_token
+                )
+                audit = result["audit"]
+                total_contacts += result["stubs_created"]
+                total_serper += audit["serper_credits"]
+
+                # Update enrichment_data with discovery summary
+                enrichment_data = company.get("enrichment_data") or {}
+                enrichment_data["contact_discovery"] = {
+                    **audit,
+                    "discovered_at": datetime.now(timezone.utc).isoformat(),
+                }
+                sb.table(TABLE).update({"enrichment_data": enrichment_data}).eq("id", company["id"]).execute()
+
+                parts = []
+                if audit["apollo_contacts"]: parts.append(f"Apollo:{audit['apollo_contacts']}")
+                if audit["zi_contacts"]: parts.append(f"ZI:{audit['zi_contacts']}")
+                if audit["serper_found"]: parts.append(f"Serper:{audit['serper_found']}")
+                if audit["apify_verified"]: parts.append(f"Verified:{audit['apify_verified']}")
+                print(f"{result['stubs_created']} stubs ({', '.join(parts) or 'none'})")
+
+            except Exception as e:
+                total_errors += 1
+                print(f"ERROR: {e}")
+                logger.error("Discovery failed for %s: %s", company.get("name", "?"), e)
+
+            time.sleep(0.5)
+
+        # Serper balance after
+        try:
+            if serper_key:
+                serper_after = requests.get("https://google.serper.dev/account",
+                    headers={"X-API-KEY": serper_key}).json().get("balance", 0)
+                print(f"\nSerper balance AFTER: {serper_after} (used: {serper_before - serper_after})")
+        except:
+            pass
+
+        print(f"Discovery done: {total_contacts} contacts, {total_serper} Serper credits, {total_errors} errors")
     else:
-        print("\nNo companies need contact discovery (all already processed)")
+        print("\nNo companies need contact discovery (all already processed or excluded)")
 
     print(f"\nPipeline complete.")
 
